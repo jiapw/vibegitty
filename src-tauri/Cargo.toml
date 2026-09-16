@@ -1,0 +1,57 @@
+[package]
+name = "vibegitty"
+version = "0.3.0"
+description = "VibeGitty - a cross-platform Git client with a built-in git engine and LFS support"
+authors = ["artsq"]
+edition = "2021"
+rust-version = "1.80"
+
+[lib]
+name = "vibegitty_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Built-in git engine: libgit2 statically vendored, no external `git` binary needed.
+git2 = { version = "0.21", default-features = false, features = ["https", "ssh", "vendored-libgit2"] }
+# Used for `git-lfs-authenticate` over SSH (shares the vendored libssh2 with git2).
+ssh2 = "0.9"
+# Git LFS (pointer format, content-addressable store, batch API client, transfer queue).
+git-lfs-pointer = "0.7"
+git-lfs-store = "0.7"
+git-lfs-api = "0.7"
+git-lfs-transfer = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+notify = "8"
+dirs = "6"
+thiserror = "2"
+chrono = "0.4"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+env_logger = "0.11"
+parking_lot = "0.12"
+
+[features]
+default = []
+# Build OpenSSL from source (Linux/macOS) instead of linking the system one.
+vendored-openssl = ["git2/vendored-openssl", "ssh2/vendored-openssl"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

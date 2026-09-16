@@ -1,0 +1,11 @@
+node_modules
+dist
+src-tauri/target
+src-tauri/gen/schemas
+*.log
+.DS_Store
+
+# GitHub OAuth App client secret compiled in by build.rs
+github-client-secret.txt
+/release/
+/.claude/

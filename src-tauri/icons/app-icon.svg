@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- VibeGitty: branch glyph with hollow ring nodes, flat colours from the app palette -->
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="#272d38"/>
+  <path d="M400 372 L400 652" fill="none" stroke="#2fd0a6" stroke-width="76" stroke-linecap="round"/>
+  <path d="M640 432 C640 560 400 480 400 640" fill="none" stroke="#2fd0a6" stroke-width="76" stroke-linecap="round"/>
+  <g fill="none" stroke="#2fd0a6" stroke-width="58">
+    <circle cx="400" cy="270" r="72"/>
+    <circle cx="400" cy="754" r="72"/>
+    <circle cx="640" cy="330" r="72"/>
+  </g>
+</svg>
