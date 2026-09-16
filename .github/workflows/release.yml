@@ -1,0 +1,85 @@
+name: Release
+
+# Builds VibeGitty for Windows, macOS and Linux when a version tag is pushed
+# (or on demand) and attaches the packages to the GitHub release for that tag.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach packages to (e.g. v0.3.1)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  # Compiled in by src-tauri/build.rs; without it GitHub sign-in falls back to the device flow.
+  VIBEGITTY_GITHUB_CLIENT_SECRET: ${{ secrets.VIBEGITTY_GITHUB_CLIENT_SECRET }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: ""
+            features: ""
+          - os: macos-latest
+            args: "--target universal-apple-darwin"
+            features: "--features vendored-openssl"
+          - os: ubuntu-22.04
+            args: ""
+            features: "--features vendored-openssl"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Linux build dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev pkg-config patchelf libfuse2
+
+      - run: npm ci
+
+      - name: Build and upload packages
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: "VibeGitty ${{ github.event.inputs.tag || github.ref_name }} (beta)"
+          releaseBody: "Beta release. See the notes on this page for details."
+          releaseDraft: false
+          prerelease: true
+          args: ${{ matrix.args }} ${{ matrix.features }}
+
+      - name: Upload the portable Windows executable
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $ver = $tag.TrimStart("v")
+          Copy-Item src-tauri/target/release/vibegitty.exe "VibeGitty-$ver-x64-portable.exe"
+          gh release upload $tag "VibeGitty-$ver-x64-portable.exe" --clobber --repo ${{ github.repository }}

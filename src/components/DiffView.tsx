@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AlignJustify, Check, ChevronDown, ChevronUp, Columns2, Loader2, WrapText, X } from "lucide-react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { api, errorMessage } from "../api";
 import { useReposStore, type RepoState } from "../store/repos";
 import { useUiStore } from "../store/ui";
@@ -14,9 +15,13 @@ interface SplitRow {
   header?: string;
   left: DiffLine | null;
   right: DiffLine | null;
-  oldRanges?: Ranges | null;
-  newRanges?: Ranges | null;
 }
+
+/** Inline highlight lookup for a removed line and the added line replacing it. */
+type InlineFor = (del: DiffLine, add: DiffLine) => { old: Ranges; new: Ranges } | null;
+
+const ROW_H = 20;
+const HUNK_H = 22;
 
 const INLINE_MAX_CHARS = 600;
 const INLINE_MAX_TOKENS = 240;
@@ -157,37 +162,6 @@ function Marked({ text, ranges, cls }: { text: string; ranges?: Ranges | null; c
   return <>{out}</>;
 }
 
-/** Inline ranges for the unified layout, keyed by line. */
-function unifiedInline(hunks: DiffHunk[]): Map<DiffLine, Ranges> {
-  const map = new Map<DiffLine, Ranges>();
-  for (const h of hunks) {
-    const lines = h.lines;
-    let i = 0;
-    while (i < lines.length) {
-      if (lines[i].kind === "context") {
-        i++;
-        continue;
-      }
-      const dels: DiffLine[] = [];
-      const adds: DiffLine[] = [];
-      while (i < lines.length && lines[i].kind === "del") dels.push(lines[i++]);
-      while (i < lines.length && lines[i].kind === "add") adds.push(lines[i++]);
-      if (dels.length === 0 && adds.length === 0) {
-        i++;
-        continue;
-      }
-      for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
-        const r = inlineDiff(dels[k].content, adds[k].content);
-        if (r) {
-          map.set(dels[k], r.old);
-          map.set(adds[k], r.new);
-        }
-      }
-    }
-  }
-  return map;
-}
-
 type BlockKind = "add" | "del" | "mod";
 
 /** A run of consecutive changed rows; `start`/`end` are indices into the rendered rows. */
@@ -235,8 +209,7 @@ function buildSplitRows(hunks: DiffHunk[], withHeaders: boolean): SplitRow[] {
       for (let k = 0; k < n; k++) {
         const left = dels[k] ?? null;
         const right = adds[k] ?? null;
-        const inl = left && right ? inlineDiff(left.content, right.content) : null;
-        rows.push({ kind: left && right ? "change" : left ? "del" : "add", left, right, oldRanges: inl?.old, newRanges: inl?.new });
+        rows.push({ kind: left && right ? "change" : left ? "del" : "add", left, right });
       }
     }
   }
@@ -304,19 +277,115 @@ function blockAttrs(marks: BlockMarks, row: number) {
   return { "data-bs": marks.start.get(row), "data-be": marks.end.get(row) };
 }
 
+/** Which removed line each added line replaces (and vice versa), by position in its run. */
+function pairLines(hunks: DiffHunk[]): Map<DiffLine, DiffLine> {
+  const map = new Map<DiffLine, DiffLine>();
+  for (const h of hunks) {
+    const lines = h.lines;
+    let i = 0;
+    while (i < lines.length) {
+      if (lines[i].kind === "context") {
+        i++;
+        continue;
+      }
+      const dels: DiffLine[] = [];
+      const adds: DiffLine[] = [];
+      while (i < lines.length && lines[i].kind === "del") dels.push(lines[i++]);
+      while (i < lines.length && lines[i].kind === "add") adds.push(lines[i++]);
+      if (dels.length === 0 && adds.length === 0) {
+        i++;
+        continue;
+      }
+      for (let k = 0; k < Math.min(dels.length, adds.length); k++) {
+        map.set(dels[k], adds[k]);
+        map.set(adds[k], dels[k]);
+      }
+    }
+  }
+  return map;
+}
+
+/** Inline diffs are computed on first use and remembered, so huge diffs only pay for what is shown. */
+function createInlineCache(): InlineFor {
+  const cache = new Map<DiffLine, { old: Ranges; new: Ranges } | null>();
+  return (del, add) => {
+    if (cache.has(del)) return cache.get(del) ?? null;
+    const r = inlineDiff(del.content, add.content);
+    cache.set(del, r);
+    return r;
+  };
+}
+
+/**
+ * Pixel width of the widest line. Only the rows on screen exist in the DOM,
+ * so the horizontal scroll range is pinned to this instead of jumping around.
+ */
+function widestLine(rows: SplitRow[], font: string): number {
+  const cols = (t: string) => {
+    let n = 0;
+    for (let i = 0; i < t.length; i++) {
+      const c = t.charCodeAt(i);
+      n += c === 9 ? 8 : c > 0x2e7f ? 2 : 1;
+    }
+    return n;
+  };
+  const cands: { t: string; n: number }[] = [];
+  let floor = 0;
+  for (const r of rows) {
+    if (r.kind === "hunk") continue;
+    for (const t of r.left === r.right ? [r.left?.content] : [r.left?.content, r.right?.content]) {
+      if (!t) continue;
+      const n = cols(t);
+      if (n < floor) continue;
+      cands.push({ t, n });
+      if (cands.length > 64) {
+        cands.sort((a, b) => b.n - a.n);
+        cands.length = 32;
+        floor = cands[31].n;
+      }
+    }
+  }
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx) return cands.reduce((m, c) => Math.max(m, c.n), 0) * 7.2;
+  ctx.font = font;
+  let w = 0;
+  for (const c of cands) w = Math.max(w, ctx.measureText(c.t.replace(/\t/g, "        ")).width);
+  return w;
+}
+
 /**
  * Side by side without soft wrap. One scroller moves both sides vertically so
  * they always line up; each side clips its long lines and scrolls them
- * horizontally on its own, with a single sticky line-number column. A sticky
- * bar at the bottom carries the horizontal scrollbars so they stay in view.
+ * horizontally on its own, with a single sticky line-number column. Rows are
+ * virtualized (fixed heights), so the file size does not matter. A sticky bar
+ * at the bottom carries the horizontal scrollbars so they stay in view.
  */
-function SplitPanes({ rows, isConflict, marks }: { rows: SplitRow[]; isConflict: boolean; marks: BlockMarks }) {
+function SplitPanes({ rows, isConflict, inlineFor }: { rows: SplitRow[]; isConflict: boolean; inlineFor: InlineFor }) {
+  const outer = useRef<HTMLDivElement>(null);
   const oldPane = useRef<HTMLDivElement>(null);
   const newPane = useRef<HTMLDivElement>(null);
   const oldBar = useRef<HTMLDivElement>(null);
   const newBar = useRef<HTMLDivElement>(null);
   const oldSpacer = useRef<HTMLDivElement>(null);
   const newSpacer = useRef<HTMLDivElement>(null);
+  const [contentWidth, setContentWidth] = useState(0);
+
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => outer.current,
+    estimateSize: (i) => (rows[i].kind === "hunk" ? HUNK_H : ROW_H),
+    overscan: 30,
+    // A sensible viewport for the first paint, before the size observer reports.
+    initialRect: { width: 800, height: 900 },
+  });
+  const items = virtualizer.getVirtualItems();
+  const total = virtualizer.getTotalSize();
+
+  useLayoutEffect(() => {
+    const el = outer.current;
+    if (!el) return;
+    setContentWidth(Math.ceil(widestLine(rows, getComputedStyle(el).font)) + 24);
+  }, [rows]);
 
   // Mirror one horizontal position to the other side and to both scrollbars.
   // A side that merely ran out of room (shorter lines) never drags the rest back.
@@ -341,27 +410,29 @@ function SplitPanes({ rows, isConflict, marks }: { rows: SplitRow[]; isConflict:
     if (oldPane.current) ro.observe(oldPane.current);
     if (newPane.current) ro.observe(newPane.current);
     return () => ro.disconnect();
-  }, [rows]);
+  }, [rows, contentWidth]);
 
   const side = (which: "old" | "new", pane: RefObject<HTMLDivElement | null>) => (
     <div ref={pane} className={`split-pane ${which}`} onScroll={() => syncFrom(pane.current)}>
-      <div className="split-side">
+      <div className="split-side" style={{ height: total }}>
         <div className="split-lnos">
-          {rows.map((r, i) =>
-            r.kind === "hunk" ? (
-              <div key={i} className="split-hunk gap" />
+          {items.map((v) => {
+            const r = rows[v.index];
+            return r.kind === "hunk" ? (
+              <div key={v.index} className="split-hunk gap" style={{ top: v.start }} />
             ) : (
-              <span key={i} className="ln">
+              <span key={v.index} className="ln" style={{ top: v.start }}>
                 {(which === "old" ? r.left?.oldLineno : r.right?.newLineno) ?? ""}
               </span>
-            )
-          )}
+            );
+          })}
         </div>
-        <div className="split-lines">
-          {rows.map((r, i) => {
+        <div className="split-lines" style={{ minWidth: contentWidth || undefined }}>
+          {items.map((v) => {
+            const r = rows[v.index];
             if (r.kind === "hunk") {
               return (
-                <div key={i} className="split-hunk">
+                <div key={v.index} className="split-hunk" style={{ top: v.start }}>
                   <span>{r.header}</span>
                 </div>
               );
@@ -369,9 +440,10 @@ function SplitPanes({ rows, isConflict, marks }: { rows: SplitRow[]; isConflict:
             const l = which === "old" ? r.left : r.right;
             const marker = isConflict && r.left && r.left.kind === "del";
             const state = !l ? " empty" : r.kind === "context" ? "" : marker ? " marker" : which === "old" ? " del" : " add";
+            const inl = r.kind === "change" && r.left && r.right ? inlineFor(r.left, r.right) : null;
             return (
-              <div key={i} className={`code ${which}${state}`} {...(which === "new" ? blockAttrs(marks, i) : {})}>
-                {l ? <Marked text={l.content} ranges={which === "old" ? r.oldRanges : r.newRanges} cls={which === "old" ? "del" : "add"} /> : ""}
+              <div key={v.index} className={`code ${which}${state}`} style={{ top: v.start }}>
+                {l ? <Marked text={l.content} ranges={which === "old" ? inl?.old : inl?.new} cls={which === "old" ? "del" : "add"} /> : ""}
               </div>
             );
           })}
@@ -380,7 +452,7 @@ function SplitPanes({ rows, isConflict, marks }: { rows: SplitRow[]; isConflict:
     </div>
   );
   return (
-    <div className="split-panes">
+    <div ref={outer} className="split-panes">
       <div className="split-sides">
         {side("old", oldPane)}
         {side("new", newPane)}
@@ -397,7 +469,7 @@ function SplitPanes({ rows, isConflict, marks }: { rows: SplitRow[]; isConflict:
   );
 }
 
-function SplitDiff({ rows, isConflict, marks }: { rows: SplitRow[]; isConflict: boolean; marks: BlockMarks }) {
+function SplitDiff({ rows, isConflict, marks, inlineFor }: { rows: SplitRow[]; isConflict: boolean; marks: BlockMarks; inlineFor: InlineFor }) {
   // One grid for the whole file so both columns stay aligned across rows.
   return (
     <div className="split-diff">
@@ -412,17 +484,18 @@ function SplitDiff({ rows, isConflict, marks }: { rows: SplitRow[]; isConflict: 
         const l = r.left;
         const rt = r.right;
         const marker = isConflict && l && l.kind === "del";
+        const inl = r.kind === "change" && l && rt ? inlineFor(l, rt) : null;
         return (
           <div key={i} className={`split-row ${r.kind}`}>
             <span className="ln" {...blockAttrs(marks, i)}>
               {l?.oldLineno ?? ""}
             </span>
             <span className={`code old${l ? (r.kind === "context" ? "" : marker ? " marker" : " del") : " empty"}`}>
-              {l ? <Marked text={l.content} ranges={r.oldRanges} cls="del" /> : ""}
+              {l ? <Marked text={l.content} ranges={inl?.old} cls="del" /> : ""}
             </span>
             <span className="ln">{rt?.newLineno ?? ""}</span>
             <span className={`code new${rt ? (r.kind === "context" ? "" : marker ? " marker" : " add") : " empty"}`}>
-              {rt ? <Marked text={rt.content} ranges={r.newRanges} cls="add" /> : ""}
+              {rt ? <Marked text={rt.content} ranges={inl?.new} cls="add" /> : ""}
             </span>
           </div>
         );
@@ -431,24 +504,27 @@ function SplitDiff({ rows, isConflict, marks }: { rows: SplitRow[]; isConflict: 
   );
 }
 
-function UnifiedDiff({ diff, marks }: { diff: FileDiff; marks: BlockMarks }) {
-  const inline = useMemo(() => unifiedInline(diff.hunks), [diff]);
+function UnifiedDiff({ diff, marks, pairs, inlineFor }: { diff: FileDiff; marks: BlockMarks; pairs: Map<DiffLine, DiffLine>; inlineFor: InlineFor }) {
   let row = 0;
   return (
     <div className="unified-diff">
       {diff.hunks.map((h, hi) => (
         <div key={hi}>
           <div className="hunk-header">{h.header}</div>
-          {h.lines.map((l, li) => (
-            <div key={li} className={`diff-line ${l.kind}`} {...blockAttrs(marks, row++)}>
-              <span className="ln">{l.oldLineno ?? ""}</span>
-              <span className="ln">{l.newLineno ?? ""}</span>
-              <span className="mark">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
-              <span className="code">
-                <Marked text={l.content} ranges={inline.get(l)} cls={l.kind === "del" ? "del" : "add"} />
-              </span>
-            </div>
-          ))}
+          {h.lines.map((l, li) => {
+            const other = pairs.get(l);
+            const ranges = !other ? null : l.kind === "del" ? inlineFor(l, other)?.old : inlineFor(other, l)?.new;
+            return (
+              <div key={li} className={`diff-line ${l.kind}`} {...blockAttrs(marks, row++)}>
+                <span className="ln">{l.oldLineno ?? ""}</span>
+                <span className="ln">{l.newLineno ?? ""}</span>
+                <span className="mark">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
+                <span className="code">
+                  <Marked text={l.content} ranges={ranges} cls={l.kind === "del" ? "del" : "add"} />
+                </span>
+              </div>
+            );
+          })}
         </div>
       ))}
     </div>
@@ -498,6 +574,20 @@ export function DiffView({ repo }: { repo: RepoState }) {
   const splitRows = useMemo(() => (diff && view === "split" ? buildSplitRows(diff.hunks, diff.hunks.length > 1) : null), [diff, view]);
   const blocks = useMemo(() => (!diff ? [] : splitRows ? splitBlocks(splitRows) : unifiedBlocks(diff.hunks)), [diff, splitRows]);
   const marks = useMemo(() => markBlocks(blocks), [blocks]);
+  const pairs = useMemo(() => (diff ? pairLines(diff.hunks) : new Map<DiffLine, DiffLine>()), [diff]);
+  const inlineFor = useMemo(() => createInlineCache(), [diff]);
+  // Row offsets of the virtualized panes (fixed heights), for marks and jumps.
+  const rowTops = useMemo(() => {
+    if (!splitRows) return null;
+    const t = new Float64Array(splitRows.length + 1);
+    let y = 0;
+    for (let i = 0; i < splitRows.length; i++) {
+      t[i] = y;
+      y += splitRows[i].kind === "hunk" ? HUNK_H : ROW_H;
+    }
+    t[splitRows.length] = y;
+    return t;
+  }, [splitRows]);
   const outerRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const metrics = useRef<{ el: HTMLElement; tops: number[] } | null>(null);
@@ -525,29 +615,46 @@ export function DiffView({ repo }: { repo: RepoState }) {
       setRuler(null);
       return;
     }
-    const base = el.getBoundingClientRect().top - el.scrollTop;
-    const starts = new Map<string, HTMLElement>();
-    el.querySelectorAll<HTMLElement>("[data-bs]").forEach((s) => starts.set(s.dataset.bs ?? "", s));
-    const ends = new Map<string, HTMLElement>();
-    el.querySelectorAll<HTMLElement>("[data-be]").forEach((s) => ends.set(s.dataset.be ?? "", s));
     const tops: number[] = [];
     const heights: number[] = [];
-    blocks.forEach((_, i) => {
-      const s = starts.get(String(i));
-      const e = ends.get(String(i));
-      const top = s ? s.getBoundingClientRect().top - base : 0;
-      tops.push(top);
-      heights.push(e ? e.getBoundingClientRect().bottom - base - top : 20);
-    });
+    if (panes && rowTops) {
+      // Virtualized rows are not all in the DOM; their positions follow from the row model.
+      for (const b of blocks) {
+        tops.push(rowTops[b.start]);
+        heights.push(rowTops[b.end + 1] - rowTops[b.start]);
+      }
+    } else {
+      const base = el.getBoundingClientRect().top - el.scrollTop;
+      const starts = new Map<string, HTMLElement>();
+      el.querySelectorAll<HTMLElement>("[data-bs]").forEach((s) => starts.set(s.dataset.bs ?? "", s));
+      const ends = new Map<string, HTMLElement>();
+      el.querySelectorAll<HTMLElement>("[data-be]").forEach((s) => ends.set(s.dataset.be ?? "", s));
+      blocks.forEach((_, i) => {
+        const s = starts.get(String(i));
+        const e = ends.get(String(i));
+        const top = s ? s.getBoundingClientRect().top - base : 0;
+        tops.push(top);
+        heights.push(e ? e.getBoundingClientRect().bottom - base - top : ROW_H);
+      });
+    }
     metrics.current = { el, tops };
     const track = el.clientHeight;
     const total = Math.max(el.scrollHeight, 1);
-    setRuler({
-      top: el.getBoundingClientRect().top - outer.getBoundingClientRect().top,
-      height: track,
-      marks: blocks.map((b, i) => ({ kind: b.kind, top: (tops[i] / total) * track, height: Math.max(2, (heights[i] / total) * track) })),
+    // Marks that touch each other are drawn as one, so thousands of blocks stay cheap.
+    const marksOut: RulerState["marks"] = [];
+    blocks.forEach((b, i) => {
+      const top = (tops[i] / total) * track;
+      const height = Math.max(2, (heights[i] / total) * track);
+      const last = marksOut[marksOut.length - 1];
+      if (last && top <= last.top + last.height + 0.5) {
+        last.height = Math.max(last.height, top + height - last.top);
+        if (last.kind !== b.kind) last.kind = "mod";
+      } else {
+        marksOut.push({ kind: b.kind, top, height });
+      }
     });
-  }, [blocks, scrollEl]);
+    setRuler({ top: el.getBoundingClientRect().top - outer.getBoundingClientRect().top, height: track, marks: marksOut });
+  }, [blocks, scrollEl, panes, rowTops]);
 
   const go = useCallback((i: number, behavior: ScrollBehavior) => {
     const m = metrics.current;
@@ -679,11 +786,11 @@ export function DiffView({ repo }: { repo: RepoState }) {
           {diff && !diff.isBinary && diff.hunks.length === 0 && !error ? <div className="diff-empty">No changes to display.</div> : null}
           {diff && showRows ? (
             !splitRows ? (
-              <UnifiedDiff diff={diff} marks={marks} />
+              <UnifiedDiff diff={diff} marks={marks} pairs={pairs} inlineFor={inlineFor} />
             ) : wrap ? (
-              <SplitDiff rows={splitRows} isConflict={isConflict} marks={marks} />
+              <SplitDiff rows={splitRows} isConflict={isConflict} marks={marks} inlineFor={inlineFor} />
             ) : (
-              <SplitPanes rows={splitRows} isConflict={isConflict} marks={marks} />
+              <SplitPanes rows={splitRows} isConflict={isConflict} inlineFor={inlineFor} />
             )
           ) : null}
         </div>

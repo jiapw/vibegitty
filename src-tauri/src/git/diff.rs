@@ -5,9 +5,7 @@ use git2::{Commit, Delta, Diff, DiffFindOptions, DiffOptions, Oid, Repository};
 use std::cell::RefCell;
 use std::path::Path;
 
-const MAX_DIFF_LINES: usize = 6000;
-/// Side-by-side views carry the whole file, so allow much more.
-const MAX_FULL_DIFF_LINES: usize = 40_000;
+/// Files above this size are not diffed as text (libgit2 reports them as binary).
 const MAX_DIFF_BYTES: i64 = 8 * 1024 * 1024;
 /// "All of the file" as a context size.
 const FULL_CONTEXT: u32 = 10_000_000;
@@ -16,14 +14,6 @@ fn base_opts(full: bool) -> DiffOptions {
     let mut opts = DiffOptions::new();
     opts.context_lines(if full { FULL_CONTEXT } else { 3 }).max_size(MAX_DIFF_BYTES);
     opts
-}
-
-fn max_lines(full: bool) -> usize {
-    if full {
-        MAX_FULL_DIFF_LINES
-    } else {
-        MAX_DIFF_LINES
-    }
 }
 
 fn commit_diff<'r>(
@@ -102,12 +92,11 @@ pub fn commit_detail(repo: &Repository, oid: &str) -> AppResult<CommitDetail> {
     })
 }
 
-fn build_file_diff(diff: &Diff, path: &str, limit: usize) -> AppResult<FileDiff> {
+fn build_file_diff(diff: &Diff, path: &str) -> AppResult<FileDiff> {
     let out = RefCell::new(FileDiff {
         path: path.to_string(),
         ..Default::default()
     });
-    let line_count = RefCell::new(0usize);
 
     let mut file_cb = |d: git2::DiffDelta<'_>, _p: f32| -> bool {
         let mut o = out.borrow_mut();
@@ -127,10 +116,6 @@ fn build_file_diff(diff: &Diff, path: &str, limit: usize) -> AppResult<FileDiff>
         true
     };
     let mut hunk_cb = |_d: git2::DiffDelta<'_>, h: git2::DiffHunk<'_>| -> bool {
-        if *line_count.borrow() >= limit {
-            out.borrow_mut().truncated = true;
-            return false;
-        }
         out.borrow_mut().hunks.push(DiffHunk {
             header: String::from_utf8_lossy(h.header()).trim_end().to_string(),
             old_start: h.old_start(),
@@ -154,12 +139,6 @@ fn build_file_diff(diff: &Diff, path: &str, limit: usize) -> AppResult<FileDiff>
             "del" => o.deletions += 1,
             _ => {}
         }
-        let mut lc = line_count.borrow_mut();
-        *lc += 1;
-        if *lc > limit {
-            o.truncated = true;
-            return false;
-        }
         let content = String::from_utf8_lossy(l.content())
             .trim_end_matches(['\n', '\r'])
             .to_string();
@@ -173,17 +152,8 @@ fn build_file_diff(diff: &Diff, path: &str, limit: usize) -> AppResult<FileDiff>
         }
         true
     };
-    let r = diff.foreach(&mut file_cb, Some(&mut binary_cb), Some(&mut hunk_cb), Some(&mut line_cb));
-    if let Err(e) = r {
-        if !out.borrow().truncated {
-            return Err(e.into());
-        }
-    }
-    let mut fd = out.into_inner();
-    if fd.truncated {
-        fd.note = Some(format!("Diff truncated after {limit} lines"));
-    }
-    Ok(fd)
+    diff.foreach(&mut file_cb, Some(&mut binary_cb), Some(&mut hunk_cb), Some(&mut line_cb))?;
+    Ok(out.into_inner())
 }
 
 fn synthetic_diff(path: &str, old: Option<String>, new: Option<String>, note: &str) -> FileDiff {
@@ -261,13 +231,12 @@ pub fn get_diff(repo: &Repository, target: &DiffTarget) -> AppResult<FileDiff> {
     let lfs_on = crate::lfs::repo_uses_lfs(repo);
     let path = target.path.as_str();
     let full = target.full;
-    let limit = max_lines(full);
     match target.kind.as_str() {
         "commit" => {
             let oid = target.oid.as_deref().ok_or("missing commit id")?;
             let commit = repo.find_commit(Oid::from_str(oid)?)?;
             let diff = commit_diff(repo, &commit, Some(path), target.old_path.as_deref(), full)?;
-            let mut fd = build_file_diff(&diff, path, limit)?;
+            let mut fd = build_file_diff(&diff, path)?;
             if lfs_on && fd.hunks.iter().any(|h| h.lines.iter().any(|l| l.content.starts_with("version https://git-lfs"))) {
                 fd.is_lfs = true;
                 fd.note = Some("Git LFS pointer".into());
@@ -290,7 +259,7 @@ pub fn get_diff(repo: &Repository, target: &DiffTarget) -> AppResult<FileDiff> {
             let mut find = DiffFindOptions::new();
             find.renames(true);
             diff.find_similar(Some(&mut find))?;
-            build_file_diff(&diff, path, limit)
+            build_file_diff(&diff, path)
         }
         "unstaged" => {
             if lfs_on && crate::lfs::is_lfs_path(repo, path) {
@@ -314,7 +283,7 @@ pub fn get_diff(repo: &Repository, target: &DiffTarget) -> AppResult<FileDiff> {
                 .show_untracked_content(true)
                 .recurse_untracked_dirs(true);
             let diff = repo.diff_index_to_workdir(None, Some(&mut opts))?;
-            build_file_diff(&diff, path, limit)
+            build_file_diff(&diff, path)
         }
         "conflict" => {
             let abs = workdir(repo)?.join(path);
@@ -322,7 +291,6 @@ pub fn get_diff(repo: &Repository, target: &DiffTarget) -> AppResult<FileDiff> {
             let text = String::from_utf8_lossy(&text).to_string();
             let lines: Vec<DiffLine> = text
                 .lines()
-                .take(MAX_FULL_DIFF_LINES)
                 .enumerate()
                 .map(|(i, l)| {
                     let kind = if l.starts_with("<<<<<<<") || l.starts_with("=======") || l.starts_with(">>>>>>>") {

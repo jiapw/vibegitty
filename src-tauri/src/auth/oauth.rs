@@ -27,11 +27,47 @@ fn pkce_challenge(verifier: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
 }
 
-const CALLBACK_HTML: &str = r#"<!doctype html><html><head><meta charset="utf-8"><title>VibeGitty</title>
-<style>body{font-family:system-ui,sans-serif;background:#15181e;color:#d6dce6;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.card{background:#1f242c;border:1px solid #2f3541;border-radius:12px;padding:32px 40px;text-align:center}h1{font-size:20px;margin:0 0 8px}p{margin:0;color:#8a93a3}</style></head>
-<body><div class="card"><h1>VibeGitty: login complete</h1><p>Return to the app; this tab can be closed.</p></div>
-<script>setTimeout(function(){window.close()},600)</script></body></html>"#;
+/// The app logo, inlined so the callback page needs no other request.
+const LOGO_SVG: &str = include_str!("../../../src/assets/logo.svg");
+
+/// Page shown in the browser once the redirect has been received.
+fn callback_html() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    format!(
+        r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>VibeGitty</title>
+<style>
+:root{{color-scheme:dark}}
+body{{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","Noto Sans","PingFang SC",sans-serif;background:#12151b;color:#d8dee9;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}
+.card{{background:#181c23;border:1px solid #2c3340;border-radius:14px;padding:36px 44px 32px;text-align:center;width:340px;box-shadow:0 12px 40px rgba(0,0,0,.35)}}
+.logo{{width:72px;height:72px;margin:0 auto 14px;display:block}}
+.name{{font-size:20px;font-weight:600;letter-spacing:.2px}}
+.ver{{font-size:12px;color:#7f8a9b;margin:4px 0 22px}}
+h1{{font-size:16px;font-weight:600;margin:0 0 6px}}
+p{{margin:0;color:#aeb7c5;font-size:13px;line-height:1.5}}
+.ok{{display:inline-flex;align-items:center;gap:8px;color:#2fd0a6;font-weight:600;font-size:14px;margin-bottom:8px}}
+.ok svg{{width:18px;height:18px}}
+button{{margin-top:22px;background:#2fd0a6;color:#0b1512;border:none;border-radius:8px;padding:10px 18px;font:inherit;font-weight:600;font-size:14px;cursor:pointer}}
+button:hover{{background:#3ee0b6}}
+.hint{{margin-top:12px;font-size:12px;color:#7f8a9b}}
+</style></head>
+<body><div class="card">
+<div class="logo">{logo}</div>
+<div class="name">VibeGitty</div>
+<div class="ver">v{version}</div>
+<div class="ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Sign-in complete</div>
+<p>Your account is connected. You can go back to the app now.</p>
+<button id="back" type="button">Back to VibeGitty</button>
+<div class="hint">This tab can be closed.</div>
+</div>
+<script>
+document.getElementById('back').addEventListener('click',function(){{
+  fetch('/focus',{{method:'POST'}}).catch(function(){{}}).then(function(){{window.close()}});
+}});
+</script></body></html>"##,
+        logo = LOGO_SVG.replacen("<svg ", "<svg style=\"width:72px;height:72px\" ", 1),
+        version = version
+    )
+}
 
 fn http_response(body: &str) -> String {
     format!(
@@ -39,6 +75,39 @@ fn http_response(body: &str) -> String {
         body.len(),
         body
     )
+}
+
+/// After the redirect the page can still ask the app to come to the front.
+/// Serve that (and nothing else) for a little while, then close the port.
+fn serve_after_login(listener: TcpListener, app: AppHandle) {
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let mut buf = [0u8; 2048];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let first = text.lines().next().unwrap_or("").to_string();
+                    let path = first.split_whitespace().nth(1).unwrap_or("/");
+                    if path.starts_with("/focus") {
+                        super::focus_main_window(&app);
+                        let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+                    } else if path.starts_with("/callback") {
+                        let _ = stream.write_all(http_response(&callback_html()).as_bytes());
+                    } else {
+                        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+                    }
+                    let _ = stream.flush();
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 /// Listen on the loopback redirect port, or explain how to fix a clash.
@@ -52,8 +121,9 @@ pub(crate) fn bind_loopback(port: u16) -> AppResult<TcpListener> {
     Ok(listener)
 }
 
-/// Wait (up to 5 minutes) for the browser redirect carrying `code`.
-pub(crate) async fn wait_for_code(listener: TcpListener, cancel: Arc<AtomicBool>, expected_state: String) -> AppResult<String> {
+/// Wait (up to 5 minutes) for the browser redirect carrying `code`. The
+/// listener then keeps serving the page's "back to the app" button briefly.
+pub(crate) async fn wait_for_code(app: AppHandle, listener: TcpListener, cancel: Arc<AtomicBool>, expected_state: String) -> AppResult<String> {
     blocking(move || {
         let deadline = Instant::now() + Duration::from_secs(300);
         loop {
@@ -87,8 +157,9 @@ pub(crate) async fn wait_for_code(listener: TcpListener, cancel: Arc<AtomicBool>
                             _ => {}
                         }
                     }
-                    let _ = stream.write_all(http_response(CALLBACK_HTML).as_bytes());
+                    let _ = stream.write_all(http_response(&callback_html()).as_bytes());
                     let _ = stream.flush();
+                    serve_after_login(listener, app);
                     if let Some(e) = error {
                         return err(format!("Authorization failed: {e}"));
                     }
@@ -169,7 +240,7 @@ pub async fn pkce_login(
     );
     open_browser(app, url.as_str());
 
-    let code = match wait_for_code(listener, cancel, state_str).await {
+    let code = match wait_for_code(app.clone(), listener, cancel, state_str).await {
         Ok(c) => c,
         Err(e) => {
             emit_status(app, status("error"));

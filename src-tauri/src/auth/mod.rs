@@ -141,7 +141,11 @@ pub async fn finish_login(
 pub fn focus_main_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
+        // Briefly pinning the window on top raises it even when the OS refuses
+        // to hand focus to a background process.
+        let _ = w.set_always_on_top(true);
         let _ = w.set_focus();
+        let _ = w.set_always_on_top(false);
     }
 }
 

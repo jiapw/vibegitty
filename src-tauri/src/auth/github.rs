@@ -56,7 +56,7 @@ pub async fn web_login(
     );
     open_browser(app, url.as_str());
 
-    let code = match super::oauth::wait_for_code(listener, cancel, state_str).await {
+    let code = match super::oauth::wait_for_code(app.clone(), listener, cancel, state_str).await {
         Ok(c) => c,
         Err(e) => {
             emit_status(app, status("error"));

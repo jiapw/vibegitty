@@ -102,7 +102,7 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     const ctx = (s: string) => lines.push({ kind: "context", oldLineno: o++, newLineno: n++, content: s });
     const del = (s: string) => lines.push({ kind: "del", oldLineno: o++, newLineno: null, content: s });
     const add = (s: string) => lines.push({ kind: "add", oldLineno: null, newLineno: n++, content: s });
-    const body = t.full ? 40 : 3;
+    const body = t.full ? 3000 : 3;
     for (let i = 0; i < body; i++) ctx(`import { thing${i} } from "./mod${i}";`);
     del("const oldValue = compute(1); // " + "a long trailing comment that keeps going and going ".repeat(4));
     del("export function legacy() {}");

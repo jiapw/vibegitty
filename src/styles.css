@@ -1331,9 +1331,10 @@ a {
 }
 .split-side {
   display: inline-flex;
-  align-items: flex-start;
+  align-items: stretch;
   min-width: 100%;
   vertical-align: top;
+  position: relative;
 }
 .split-lnos {
   position: sticky;
@@ -1346,6 +1347,9 @@ a {
 }
 .split-lnos .ln {
   display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
   height: 20px;
   text-align: right;
   padding-right: 8px;
@@ -1353,15 +1357,22 @@ a {
   user-select: none;
 }
 .split-lnos .split-hunk.gap {
+  position: absolute;
+  left: 0;
+  right: 0;
   height: 20px;
   padding: 0;
 }
 .split-lines {
   flex: 1 0 auto;
   min-width: 0;
+  position: relative;
 }
 .split-lines .code {
   display: block;
+  position: absolute;
+  left: 0;
+  right: 0;
   height: 20px;
   white-space: pre;
   padding: 0 8px;
@@ -1379,6 +1390,9 @@ a {
   background-size: 20px 20px;
 }
 .split-lines .split-hunk {
+  position: absolute;
+  left: 0;
+  right: 0;
   white-space: nowrap;
 }
 .split-lines .split-hunk > span {
