@@ -1,6 +1,6 @@
 [package]
 name = "vibegitty"
-version = "0.3.1"
+version = "1.0.0"
 description = "VibeGitty - a cross-platform Git client with a built-in git engine and LFS support"
 authors = ["artsq"]
 edition = "2021"

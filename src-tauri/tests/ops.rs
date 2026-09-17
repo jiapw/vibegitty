@@ -3,7 +3,7 @@
 
 use vibegitty_lib::config::Settings;
 use vibegitty_lib::git::creds::OpContext;
-use vibegitty_lib::git::{self, branch, commit, diff, log, merge, refs, remote, repo as grepo, staging, stash, status, tags};
+use vibegitty_lib::git::{self, branch, commit, diff, log, merge, rebase, refs, remote, repo as grepo, staging, stash, status, tags};
 use vibegitty_lib::git::types::DiffTarget;
 use vibegitty_lib::lfs;
 use vibegitty_lib::state::CredSet;
@@ -378,7 +378,7 @@ fn remote_push_fetch_pull_via_local_bare() {
     remote::fetch(&ctx(), &repo1, Some("origin"), true).unwrap();
     let head = grepo::info(&repo1).unwrap().head;
     assert_eq!((head.ahead, head.behind), (0, 1));
-    let pulled = remote::pull(&ctx(), &repo1, &settings(), true).unwrap();
+    let pulled = remote::pull(&ctx(), &repo1, &settings(), "ff").unwrap();
     assert_eq!(pulled.merge.kind, "fast_forward");
     assert_eq!(grepo::info(&repo1).unwrap().head.oid.as_deref(), Some(c2.as_str()));
     assert_eq!(read(&work1, "f.txt"), "v2\n");
@@ -476,4 +476,88 @@ fn url_host_parsing() {
     assert_eq!(remote::url_host("git@github.com:a/b.git").as_deref(), Some("github.com"));
     assert_eq!(remote::url_host("ssh://git@bitbucket.org/a/b.git").as_deref(), Some("bitbucket.org"));
     assert_eq!(remote::url_host("C:/repos/local"), None);
+}
+
+#[test]
+fn rebase_replays_commits_and_handles_conflicts() {
+    let dir = tmp("rebase");
+    let info = grepo::init(dir.to_str().unwrap()).unwrap();
+    let repo = git::open(&info.path).unwrap();
+    write(&dir, "a.txt", "line1\nline2\nline3\n");
+    commit_all(&repo, "base");
+    let main_branch = grepo::info(&repo).unwrap().head.branch.unwrap();
+
+    // main moves on; feature has its own commit -> rebase replays it on top of main
+    branch::create_branch(&repo, "feature", None, true).unwrap();
+    write(&dir, "c.txt", "c\n");
+    let feat_oid = commit_all(&repo, "feature work");
+    branch::checkout_branch(&repo, &main_branch).unwrap();
+    write(&dir, "b.txt", "b\n");
+    let main_oid = commit_all(&repo, "main work");
+    branch::checkout_branch(&repo, "feature").unwrap();
+    let r = rebase::rebase_onto(&repo, &settings(), &main_branch).unwrap();
+    assert_eq!(r.kind, "rebased");
+    assert_eq!(status::working_status(&repo).unwrap().state, "clean");
+    let head = grepo::info(&repo).unwrap().head.oid.unwrap();
+    assert_ne!(head, feat_oid);
+    let page = log::get_log(&repo, 0, 10).unwrap();
+    assert_eq!(page.commits[0].summary, "feature work");
+    assert_eq!(page.commits[0].parents, vec![main_oid.clone()]);
+    assert!(dir.join("b.txt").exists() && dir.join("c.txt").exists());
+
+    // rebasing again is a no-op; rebasing main onto feature is a fast-forward
+    assert_eq!(rebase::rebase_onto(&repo, &settings(), &main_branch).unwrap().kind, "up_to_date");
+    branch::checkout_branch(&repo, &main_branch).unwrap();
+    assert_eq!(rebase::rebase_onto(&repo, &settings(), "feature").unwrap().kind, "fast_forward");
+    assert_eq!(grepo::info(&repo).unwrap().head.oid.unwrap(), head);
+
+    // conflicting replay: stops, block-level resolution, continue
+    write(&dir, "a.txt", "line1\nMAIN\nline3\n");
+    commit_all(&repo, "main edit");
+    branch::checkout_branch(&repo, "feature").unwrap();
+    write(&dir, "a.txt", "line1\nFEATURE\nline3\n");
+    let feat_edit = commit_all(&repo, "feature edit");
+    let r = rebase::rebase_onto(&repo, &settings(), &main_branch).unwrap();
+    assert_eq!(r.kind, "conflicts");
+    assert_eq!(r.conflicts, vec!["a.txt".to_string()]);
+    let st = status::working_status(&repo).unwrap();
+    assert_eq!(st.state, "rebase");
+    assert_eq!(st.rebase_progress.as_deref(), Some("1/1"));
+    assert_eq!(st.conflicted.len(), 1);
+    assert!(rebase::rebase_continue(&repo, &settings()).is_err());
+    assert!(read(&dir, "a.txt").contains("<<<<<<<"));
+    let remaining = merge::resolve_conflict_block(&repo, "a.txt", 0, "both").unwrap();
+    assert_eq!(remaining, 0);
+    assert_eq!(read(&dir, "a.txt"), "line1\nMAIN\nFEATURE\nline3\n");
+    assert!(status::working_status(&repo).unwrap().conflicted.is_empty());
+    let r = rebase::rebase_continue(&repo, &settings()).unwrap();
+    assert_eq!(r.kind, "rebased");
+    assert_eq!(status::working_status(&repo).unwrap().state, "clean");
+    let page = log::get_log(&repo, 0, 10).unwrap();
+    assert_eq!(page.commits[0].summary, "feature edit");
+    assert_ne!(page.commits[0].oid, feat_edit);
+    assert_eq!(page.commits[1].summary, "main edit");
+
+    // abort puts the branch back
+    write(&dir, "a.txt", "line1\nFEATURE2\nFEATURE\nline3\n");
+    let before = commit_all(&repo, "feature more");
+    branch::checkout_branch(&repo, &main_branch).unwrap();
+    write(&dir, "a.txt", "line1\nMAIN2\nFEATURE\nline3\n");
+    commit_all(&repo, "main edit 2");
+    branch::checkout_branch(&repo, "feature").unwrap();
+    assert_eq!(rebase::rebase_onto(&repo, &settings(), &main_branch).unwrap().kind, "conflicts");
+    merge::abort_operation(&repo).unwrap();
+    assert_eq!(status::working_status(&repo).unwrap().state, "clean");
+    assert_eq!(grepo::info(&repo).unwrap().head.oid.unwrap(), before);
+    assert_eq!(grepo::info(&repo).unwrap().head.branch.as_deref(), Some("feature"));
+    assert_eq!(read(&dir, "a.txt"), "line1\nFEATURE2\nFEATURE\nline3\n");
+
+    // block resolution on a merge conflict: pick one side per block
+    let r = merge::merge_branch(&repo, &settings(), &main_branch, false).unwrap();
+    assert_eq!(r.kind, "conflicts");
+    assert_eq!(merge::resolve_conflict_block(&repo, "a.txt", 0, "theirs").unwrap(), 0);
+    assert_eq!(read(&dir, "a.txt"), "line1\nMAIN2\nFEATURE\nline3\n");
+    assert!(status::working_status(&repo).unwrap().conflicted.is_empty());
+    commit::commit(&repo, &settings(), "Merge main", false).unwrap();
+    assert_eq!(status::working_status(&repo).unwrap().state, "clean");
 }

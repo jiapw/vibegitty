@@ -1,25 +1,4 @@
-import {
-  Archive,
-  ArchiveRestore,
-  ArrowUp,
-  Check,
-  Cloud,
-  Copy,
-  Database,
-  Eye,
-  EyeOff,
-  GitBranchPlus,
-  GitMerge,
-  History,
-  Pencil,
-  Plus,
-  RefreshCw,
-  RotateCcw,
-  Scissors,
-  Tag,
-  Trash2,
-  Undo2,
-} from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Check, Cloud, Copy, Database, Eye, EyeOff, FolderOpen, GitBranchPlus, GitMerge, History, Pencil, Plus, RefreshCw, RotateCcw, Scissors, Tag, Trash2, Undo2 } from "lucide-react";
 import type { RepoState } from "../store/repos";
 import type { MenuItem } from "../store/ui";
 import type { CommitInfo, RefInfo, StashInfo, StatusEntry } from "../types";
@@ -78,11 +57,18 @@ export function refMenu(repo: RepoState, ref: RefInfo): MenuItem[] {
     if (!ref.isHead) {
       items.push({ label: `Checkout ${ref.name}`, icon: <Check />, onClick: () => void actions.checkoutBranch(p, ref.name) });
       if (current)
-        items.push({
-          label: `Merge ${ref.name} into ${current}`,
-          icon: <GitMerge />,
-          onClick: () => void actions.mergeInto(p, ref.name),
-        });
+        items.push(
+          {
+            label: `Merge ${ref.name} into ${current}`,
+            icon: <GitMerge />,
+            onClick: () => void actions.mergeInto(p, ref.name),
+          },
+          {
+            label: `Rebase ${current} onto ${ref.name}`,
+            icon: <GitMerge />,
+            onClick: () => void actions.rebaseOnto(p, ref.name),
+          }
+        );
       items.push(sep);
     }
     items.push(
@@ -104,11 +90,18 @@ export function refMenu(repo: RepoState, ref: RefInfo): MenuItem[] {
       { label: `Checkout ${ref.name}`, icon: <Check />, onClick: () => void actions.checkoutRemote(p, ref.name) },
     ];
     if (current)
-      items.push({
-        label: `Merge ${ref.name} into ${current}`,
-        icon: <GitMerge />,
-        onClick: () => void actions.mergeInto(p, ref.name),
-      });
+      items.push(
+        {
+          label: `Merge ${ref.name} into ${current}`,
+          icon: <GitMerge />,
+          onClick: () => void actions.mergeInto(p, ref.name),
+        },
+        {
+          label: `Rebase ${current} onto ${ref.name}`,
+          icon: <GitMerge />,
+          onClick: () => void actions.rebaseOnto(p, ref.name),
+        }
+      );
     items.push(
       sep,
       { label: `Fetch ${remote}`, icon: <RefreshCw />, onClick: () => void actions.fetch(p, remote) },
@@ -128,7 +121,12 @@ export function refMenu(repo: RepoState, ref: RefInfo): MenuItem[] {
   return [
     { label: `Checkout tag ${ref.name}`, icon: <Eye />, onClick: () => actions.checkoutCommit(p, ref.oid, `tag ${ref.name}`) },
     { label: "Create branch here…", icon: <GitBranchPlus />, onClick: () => actions.createBranch(p, ref.name, `tag ${ref.name}`) },
-    ...(current ? [{ label: `Merge ${ref.name} into ${current}`, icon: <GitMerge />, onClick: () => void actions.mergeInto(p, ref.name) }] : []),
+    ...(current
+      ? [
+          { label: `Merge ${ref.name} into ${current}`, icon: <GitMerge />, onClick: () => void actions.mergeInto(p, ref.name) },
+          { label: `Rebase ${current} onto ${ref.name}`, icon: <GitMerge />, onClick: () => void actions.rebaseOnto(p, ref.name) },
+        ]
+      : []),
     sep,
     ...repo.remotes.map((r) => ({
       label: `Push tag to ${r.name}`,
@@ -209,6 +207,22 @@ export function folderMenu(
   return items;
 }
 
+/** "Show in Explorer" / "Reveal in Finder" / "Show in file manager", by platform. */
+export function revealLabel(): string {
+  const ua = navigator.userAgent;
+  return ua.includes("Mac") ? "Reveal in Finder" : ua.includes("Windows") ? "Show in Explorer" : "Show in file manager";
+}
+
+/** Context menu for a file of an existing commit. */
+export function commitFileMenu(repo: RepoState, file: { path: string; oldPath: string | null }, showDiff: () => void): MenuItem[] {
+  return [
+    { label: "View changes", icon: <Eye />, onClick: showDiff },
+    { label: revealLabel(), icon: <FolderOpen />, onClick: () => actions.reveal(repo.path, file.path) },
+    sep,
+    { label: "Copy path", icon: <Copy />, onClick: () => void copyText(file.path) },
+  ];
+}
+
 export function fileMenu(
   repo: RepoState,
   entry: StatusEntry,
@@ -223,7 +237,11 @@ export function fileMenu(
   const n = targets.length;
   const many = n > 1;
   const sfx = many ? ` (${n} files)` : "";
-  const items: MenuItem[] = [{ label: "View changes", icon: <Eye />, onClick: showDiff }, sep];
+  const items: MenuItem[] = [
+    { label: "View changes", icon: <Eye />, onClick: showDiff },
+    { label: revealLabel(), icon: <FolderOpen />, onClick: () => actions.reveal(p, entry.path) },
+    sep,
+  ];
   if (area === "unstaged") {
     items.push(
       { label: `Stage${sfx}`, icon: <Plus />, onClick: () => void actions.stage(p, targets) },

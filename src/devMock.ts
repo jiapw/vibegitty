@@ -57,10 +57,12 @@ const status: WorkingStatus = {
     entry("docs/notes.txt", "untracked"),
     entry("assets/model.bin", "untracked", 90 * 1024 * 1024),
   ],
-  conflicted: [],
-  state: "clean",
-  mergeMessage: null,
+  // `?conflict` in the URL previews a merge with conflicts.
+  conflicted: new URLSearchParams(location.search).has("conflict") ? [entry("src/merge.ts", "conflicted"), entry("src/other.ts", "conflicted")] : [],
+  state: new URLSearchParams(location.search).has("conflict") ? "merge" : "clean",
+  mergeMessage: new URLSearchParams(location.search).has("conflict") ? "Merge branch 'feature/login'" : null,
   mergeHeads: [],
+  rebaseProgress: null,
 };
 
 function move(from: StatusEntry[], to: StatusEntry[], paths: string[], toStatus?: (e: StatusEntry) => string) {
@@ -95,7 +97,30 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_author: () => ({ name: "Demo User", email: "demo@example.com", source: "global" }),
   get_commit_detail: (a) => ({ commit: commits.find((c) => c.oid === a.oid) ?? commits[0], files: [{ path: "src/app.ts", oldPath: null, status: "modified", additions: 3, deletions: 1, isBinary: false }], additions: 3, deletions: 1 }),
   get_diff: (a) => {
-    const t = a.target as { path: string; full?: boolean };
+    const t = a.target as { path: string; full?: boolean; kind?: string };
+    if (t.kind === "conflict") {
+      const text = [
+        "import { login } from './login';",
+        "",
+        "<<<<<<< HEAD",
+        "export const TIMEOUT = 30;",
+        "export const RETRIES = 3;",
+        "=======",
+        "export const TIMEOUT = 45;",
+        ">>>>>>> feature/login",
+        "",
+        "export function run() {",
+        "<<<<<<< HEAD",
+        "  return login(TIMEOUT, RETRIES);",
+        "=======",
+        "  return login(TIMEOUT);",
+        ">>>>>>> feature/login",
+        "}",
+      ];
+      const lines = text.map((content, i) => ({ kind: /^(<<<<<<<|=======|>>>>>>>)/.test(content) ? "del" : "context", oldLineno: i + 1, newLineno: i + 1, content }));
+      return { path: t.path, oldPath: null, status: "conflicted", isBinary: false, isLfs: false, additions: 0, deletions: 0, truncated: false, note: null,
+        hunks: [{ header: `@@ -1,${lines.length} +1,${lines.length} @@ conflicted file`, oldStart: 1, oldLines: lines.length, newStart: 1, newLines: lines.length, lines }] };
+    }
     const lines: { kind: string; oldLineno: number | null; newLineno: number | null; content: string }[] = [];
     let o = 1;
     let n = 1;
@@ -121,6 +146,11 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   discard_all: () => { status.unstaged.length = 0; return null; },
   add_gitignore_patterns: (a) => (a.patterns as string[]).length,
   remove_recent_repo: () => null,
+  reveal_path: () => null,
+  rebase_branch: () => ({ kind: "rebased", oid: "0101010101010101010101010101010101010101", conflicts: [] }),
+  rebase_continue: () => ({ kind: "rebased", oid: "0101010101010101010101010101010101010101", conflicts: [] }),
+  rebase_skip: () => ({ kind: "rebased", oid: "0101010101010101010101010101010101010101", conflicts: [] }),
+  resolve_conflict_block: () => 0,
   commit: (a) => { const oid = Math.random().toString(16).slice(2).padEnd(40, "0"); commits.unshift(commit(oid, [commits[0].oid], String(a.message).split("\n")[0], 0)); refs[0].oid = oid; status.staged.length = 0; return oid; },
   list_accounts: () => [],
   "plugin:event|listen": () => 1,

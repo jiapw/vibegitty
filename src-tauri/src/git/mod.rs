@@ -7,6 +7,7 @@ pub mod creds;
 pub mod diff;
 pub mod log;
 pub mod merge;
+pub mod rebase;
 pub mod refs;
 pub mod remote;
 pub mod repo;

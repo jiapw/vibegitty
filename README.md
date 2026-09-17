@@ -14,6 +14,17 @@ Source: <https://github.com/jiapw/vibegitty>
 
 ![VibeGitty: commit graph with branch, tag and remote labels, the working-directory panel with unstaged and staged files, and the commit box](docs/screenshot.png)
 
+## Download
+
+Packages for every release are on the [Releases page](https://github.com/jiapw/vibegitty/releases):
+
+- **Windows**: `VibeGitty-<version>-x64-portable.exe` (single file, nothing to install; put a
+  `VibeGittyData` folder next to it to keep settings beside the exe), or the `.msi` /
+  `-setup.exe` installers.
+- **macOS**: universal `.dmg`. The build is not notarized yet: after copying the app run
+  `xattr -cr /Applications/VibeGitty.app` once, or right-click → Open.
+- **Linux**: `.AppImage`, `.deb` and `.rpm` (WebKitGTK 4.1 required).
+
 ## Features
 
 - Open, clone and initialize repositories; several repositories open at once (tabs),
@@ -26,20 +37,27 @@ Source: <https://github.com/jiapw/vibegitty>
   click, Ctrl+A), per folder or all; flat list or folder tree (single-child folder
   chains are compacted); unstaged and staged lists in a resizable vertical split.
   Right-click untracked files or folders to add them, a parent folder or their
-  extension to `.gitignore`. Commit with a single-line summary + description, amend,
-  Ctrl+Enter.
+  extension to `.gitignore`; every file row (working directory and commit details) can
+  be shown in Explorer / Finder / the file manager. Commit with a single-line summary +
+  description, amend, Ctrl+Enter.
 - Diff view (unstaged, staged, conflicts, per commit): unified hunks or a side-by-side
-  view of the whole file, soft wrap on/off, character-level highlighting inside changed
-  lines, change marks on the scrollbar, previous / next change buttons, and the view
-  opens at the first change. In side-by-side mode without wrapping each side clips and
-  scrolls long lines on its own while both sides stay aligned and in sync.
+  view of the whole file, soft wrap on/off, syntax highlighting for 340+ languages
+  (Shiki / TextMate grammars, picked by file name, loaded on demand, dark and light
+  themes), character-level highlighting inside changed lines, change marks on the
+  scrollbar, previous / next change buttons, and the view opens at the first change. In
+  side-by-side mode without wrapping each side clips and scrolls long lines on its own
+  while both sides stay aligned and in sync.
 - Branches: create, checkout, checkout remote branch (creates a tracking branch),
   rename, delete (with force fallback), set upstream, ahead/behind counts.
 - Fetch (with prune), pull (merge or fast-forward only), push (set upstream, force),
   delete remote branches, push tags, manage remotes.
-- Merge with conflict handling: conflicted files listed, take ours / theirs or edit and
-  mark resolved, commit the merge, or abort. Cherry-pick, revert, reset (soft / mixed
-  / hard), tags (lightweight and annotated), stashes (save / apply / pop / drop).
+- Merge and rebase (rebase onto any branch, tag or commit; pull with rebase) with
+  conflict handling: when a pull, merge, rebase, cherry-pick or revert stops on
+  conflicts the first conflicted file opens in a manual-merge view that shows each
+  conflict as its two sides with *keep ours / theirs / both* buttons, plus whole-file
+  take ours / theirs, mark resolved, next / previous conflicted file, and abort or
+  commit / continue right there. Cherry-pick, revert, reset (soft / mixed / hard), tags
+  (lightweight and annotated), stashes (save / apply / pop / drop).
 - Accounts (see [Sign-in setup](#sign-in-setup)):
   - **GitHub**: sign in with the browser (OAuth web flow, like GitKraken), device flow
     as a fallback, or a personal access token; GitHub Enterprise supported.
@@ -73,6 +91,7 @@ src/                 React + TypeScript frontend (Vite)
   lib/actions.ts     UI actions (fetch, pull, push, checkout, stage, commit, LFS...)
   lib/menus.tsx      context menus
   lib/theme.ts       dark / light / system theme
+  lib/highlight.ts   Shiki syntax highlighting (language by file name, lazy grammars)
   store/             zustand stores (repos, config, ui preferences)
   devMock.ts         fake backend so `npm run dev` works in a plain browser
 src-tauri/src/
@@ -233,7 +252,9 @@ alternative.
 - Authentication for HTTPS remotes: the matching account token is used first; if none
   matches, an existing git credential helper (if any is configured) is tried. SSH host
   keys are accepted on first use.
-- Pull is fetch + merge (or fast-forward only). Rebase is not implemented yet.
+- Pull is fetch + merge, fast-forward only, or fetch + rebase. Rebases use libgit2's
+  rebase machinery, so a stopped rebase looks like one made by git (continue, skip and
+  abort work on it, also after a restart).
 - Aborting a merge / cherry-pick / revert resets the working tree to HEAD.
 - Diffs have no line limit; the side-by-side view virtualizes its rows, so file
   length does not matter. Files over 8 MB are not diffed as text; LFS files show their

@@ -179,11 +179,13 @@ pub fn working_status(repo: &Repository) -> AppResult<WorkingStatus> {
     let merge_message = if repo.state() != RepositoryState::Clean {
         std::fs::read_to_string(repo.path().join("MERGE_MSG"))
             .ok()
+            .or_else(|| std::fs::read_to_string(repo.path().join("rebase-merge").join("message")).ok())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     } else {
         None
     };
+    let rebase_progress = super::rebase::rebase_progress(repo);
 
     Ok(WorkingStatus {
         staged,
@@ -192,5 +194,6 @@ pub fn working_status(repo: &Repository) -> AppResult<WorkingStatus> {
         state,
         merge_message,
         merge_heads,
+        rebase_progress,
     })
 }

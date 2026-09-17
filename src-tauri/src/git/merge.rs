@@ -136,8 +136,11 @@ pub fn merge_branch(repo: &Repository, settings: &Settings, source: &str, ff_onl
     merge_annotated(repo, settings, &annotated, &message, ff_only)
 }
 
-/// Abort an in-progress merge / cherry-pick / revert (like `git merge --abort`).
+/// Abort an in-progress merge / cherry-pick / revert / rebase.
 pub fn abort_operation(repo: &Repository) -> AppResult<()> {
+    if super::rebase::is_rebasing(repo) {
+        return super::rebase::rebase_abort(repo);
+    }
     let head = repo.head()?.peel_to_commit()?;
     repo.reset(head.as_object(), ResetType::Hard, None)?;
     repo.cleanup_state()?;
@@ -187,6 +190,76 @@ pub fn resolve_conflict(repo: &Repository, path: &str, side: &str) -> AppResult<
     }
     index.write()?;
     Ok(())
+}
+
+/// A conflict region of a file with markers: line indexes of the markers.
+struct ConflictBlock {
+    start: usize,
+    base: Option<usize>,
+    mid: usize,
+    end: usize,
+}
+
+fn conflict_blocks(lines: &[&str]) -> Vec<ConflictBlock> {
+    let mut out = Vec::new();
+    let mut cur: Option<ConflictBlock> = None;
+    for (i, l) in lines.iter().enumerate() {
+        if l.starts_with("<<<<<<<") {
+            cur = Some(ConflictBlock { start: i, base: None, mid: usize::MAX, end: usize::MAX });
+        } else if let Some(b) = cur.as_mut() {
+            if l.starts_with("|||||||") && b.mid == usize::MAX {
+                b.base = Some(i);
+            } else if l.starts_with("=======") && b.mid == usize::MAX {
+                b.mid = i;
+            } else if l.starts_with(">>>>>>>") && b.mid != usize::MAX {
+                b.end = i;
+                if let Some(done) = cur.take() {
+                    out.push(done);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Replace the `block`-th conflict region of `path` with one side ("ours",
+/// "theirs") or both. Returns how many regions remain; when none do, the file
+/// is staged as resolved.
+pub fn resolve_conflict_block(repo: &Repository, path: &str, block: usize, choice: &str) -> AppResult<usize> {
+    let abs = workdir(repo)?.join(path);
+    let raw = std::fs::read(&abs)?;
+    let text = String::from_utf8_lossy(&raw).to_string();
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let trailing_newline = text.ends_with('\n');
+    let lines: Vec<&str> = text.lines().collect();
+    let blocks = conflict_blocks(&lines);
+    let Some(b) = blocks.get(block) else {
+        return crate::error::err(format!("'{path}' has no conflict #{}", block + 1));
+    };
+    let ours = &lines[b.start + 1..b.base.unwrap_or(b.mid)];
+    let theirs = &lines[b.mid + 1..b.end];
+    let replacement: Vec<&str> = match choice {
+        "ours" => ours.to_vec(),
+        "theirs" => theirs.to_vec(),
+        "both" => ours.iter().chain(theirs.iter()).copied().collect(),
+        other => return crate::error::err(format!("Unknown choice '{other}'")),
+    };
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    out.extend_from_slice(&lines[..b.start]);
+    out.extend(replacement);
+    out.extend_from_slice(&lines[b.end + 1..]);
+    let mut joined = out.join(nl);
+    if trailing_newline {
+        joined.push_str(nl);
+    }
+    std::fs::write(&abs, joined)?;
+    let remaining = blocks.len() - 1;
+    if remaining == 0 {
+        let mut index = repo.index()?;
+        index.add_path(Path::new(path))?;
+        index.write()?;
+    }
+    Ok(remaining)
 }
 
 pub fn cherry_pick(repo: &Repository, settings: &Settings, oid: &str) -> AppResult<MergeResult> {

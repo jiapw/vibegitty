@@ -23,7 +23,7 @@ import { useUiStore, toast } from "../store/ui";
 import { useConfigStore } from "../store/config";
 import type { CommitDetail, CommitFile, StatusEntry } from "../types";
 import { actions, copyText } from "../lib/actions";
-import { fileMenu, folderMenu } from "../lib/menus";
+import { commitFileMenu, fileMenu, folderMenu } from "../lib/menus";
 import { basename, dirname, formatBytes, formatDateTime, statusLetter } from "../lib/format";
 import { buildFileTree, flattenFileTree, type FolderNode, type TreeNode } from "../lib/fileTree";
 import { Avatar } from "./Avatar";
@@ -355,11 +355,19 @@ function WipPanel({ repo }: { repo: RepoState }) {
   const head = repo.info?.head;
   const branch = head?.branch ?? (head?.detached ? "detached HEAD" : "");
   const busy = !!repo.busy;
-  const canCommit = (st.staged.length > 0 || amend || st.state !== "clean") && summary.trim().length > 0 && st.conflicted.length === 0 && !busy;
+  const rebasing = st.state === "rebase";
+  const canCommit = rebasing
+    ? st.conflicted.length === 0 && !busy
+    : (st.staged.length > 0 || amend || st.state !== "clean") && summary.trim().length > 0 && st.conflicted.length === 0 && !busy;
   const message = body.trim() ? `${summary.trim()}\n\n${body.trim()}` : summary.trim();
 
   const doCommit = async () => {
     if (!canCommit) return;
+    if (rebasing) {
+      // A rebase step keeps the original commit message; nothing to type.
+      await actions.rebaseContinue(repo.path);
+      return;
+    }
     const r = await actions.commit(repo.path, message, amend);
     if (r !== undefined) {
       setSummary("");
@@ -398,11 +406,27 @@ function WipPanel({ repo }: { repo: RepoState }) {
         <div className="banner warn">
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <AlertTriangle size={14} />
-            <b>{opLabel} in progress</b>
-            {st.conflicted.length ? <span>· {st.conflicted.length} conflicted file(s)</span> : <span>· ready to commit</span>}
+            <b>
+              {opLabel} in progress{rebasing && st.rebaseProgress ? ` (${st.rebaseProgress})` : ""}
+            </b>
+            {st.conflicted.length ? <span>· {st.conflicted.length} conflicted file(s)</span> : <span>· {rebasing ? "ready to continue" : "ready to commit"}</span>}
           </div>
-          <div>Resolve conflicts (take ours / theirs, or edit the files and mark them resolved), then commit to finish.</div>
+          <div>
+            {rebasing
+              ? "Resolve conflicts (open a file to pick a side per conflict, or take ours / theirs), then continue; skip drops the commit being replayed."
+              : "Resolve conflicts (open a file to pick a side per conflict, or take ours / theirs), then commit to finish."}
+          </div>
           <div className="actions">
+            {rebasing ? (
+              <>
+                <button className="btn small primary" onClick={() => void actions.rebaseContinue(repo.path)} disabled={busy || st.conflicted.length > 0}>
+                  Continue rebase
+                </button>
+                <button className="btn small ghost" onClick={() => actions.rebaseSkip(repo.path)} disabled={busy}>
+                  Skip commit
+                </button>
+              </>
+            ) : null}
             <button className="btn small danger" onClick={() => actions.abort(repo.path, opLabel)} disabled={busy}>
               Abort {opLabel}
             </button>
@@ -517,7 +541,7 @@ function WipPanel({ repo }: { repo: RepoState }) {
           <span className="kbd">Ctrl+Enter</span>
           <button className="btn primary" disabled={!canCommit} onClick={() => void doCommit()}>
             {busy ? <Loader2 className="spin" /> : null}
-            {amend ? "Amend commit" : st.state !== "clean" ? `Commit ${opLabel}` : `Commit${st.staged.length ? ` ${st.staged.length} file${st.staged.length === 1 ? "" : "s"}` : ""}`}
+            {rebasing ? "Continue rebase" : amend ? "Amend commit" : st.state !== "clean" ? `Commit ${opLabel}` : `Commit${st.staged.length ? ` ${st.staged.length} file${st.staged.length === 1 ? "" : "s"}` : ""}`}
           </button>
         </div>
       </div>
@@ -681,6 +705,11 @@ function CommitPanel({ repo, oid }: { repo: RepoState; oid: string }) {
                 style={{ paddingLeft: 10 + n.depth * INDENT }}
                 title={`${f.path}${f.oldPath ? ` (was ${f.oldPath})` : ""}`}
                 onClick={() => showDiff(repo.path, { kind: "commit", oid, path: f.path, oldPath: f.oldPath })}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  const open = () => showDiff(repo.path, { kind: "commit", oid, path: f.path, oldPath: f.oldPath });
+                  useUiStore.getState().openContextMenu(e.clientX, e.clientY, commitFileMenu(repo, f, open));
+                }}
               >
                 {view === "tree" ? <span className="chev" /> : null}
                 <span className={`st ${letter}`}>{letter}</span>

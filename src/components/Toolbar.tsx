@@ -89,8 +89,9 @@ export function Toolbar() {
   const current = head?.branch ?? null;
 
   const pullMenu = (): MenuItem[] => [
-    { label: "Pull (fetch + merge)", onClick: () => void actions.pull(p, false) },
-    { label: "Pull (fast-forward only)", onClick: () => void actions.pull(p, true) },
+    { label: "Pull (fetch + merge)", onClick: () => void actions.pull(p, "merge") },
+    { label: "Pull (fetch + rebase)", onClick: () => void actions.pull(p, "rebase") },
+    { label: "Pull (fast-forward only)", onClick: () => void actions.pull(p, "ff") },
     { separator: true },
     { label: "Fetch all remotes", onClick: () => void actions.fetch(p) },
     { label: "Fetch all & prune deleted branches", onClick: () => void actions.fetch(p, null, true) },

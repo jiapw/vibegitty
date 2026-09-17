@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
-import { AlignJustify, Check, ChevronDown, ChevronUp, Columns2, Loader2, WrapText, X } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { AlignJustify, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Columns2, Loader2, WrapText, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { api, errorMessage } from "../api";
 import { useReposStore, type RepoState } from "../store/repos";
 import { useUiStore } from "../store/ui";
 import type { DiffHunk, DiffLine, FileDiff } from "../types";
 import { actions } from "../lib/actions";
+import { languageFor, tokenizeLines, type LineTokens } from "../lib/highlight";
 
 /** Character ranges [start, end) of a line that differ from its counterpart. */
 type Ranges = [number, number][];
@@ -19,6 +20,11 @@ interface SplitRow {
 
 /** Inline highlight lookup for a removed line and the added line replacing it. */
 type InlineFor = (del: DiffLine, add: DiffLine) => { old: Ranges; new: Ranges } | null;
+/** Syntax tokens for a line, when highlighting is available. */
+type TokensFor = (l: DiffLine) => LineTokens | undefined;
+
+/** Files above this many lines are shown without syntax colours. */
+const HL_MAX_LINES = 20000;
 
 const ROW_H = 20;
 const HUNK_H = 22;
@@ -144,21 +150,70 @@ function inlineDiff(oldText: string, newText: string): { old: Ranges; new: Range
   return { old, new: nw };
 }
 
-/** Line text with its differing stretches wrapped in <mark>. */
-function Marked({ text, ranges, cls }: { text: string; ranges?: Ranges | null; cls: string }) {
-  if (!ranges || ranges.length === 0) return <>{text}</>;
+function tokenStyle(t: LineTokens[number]): CSSProperties | undefined {
+  if (!t.color && !t.fontStyle) return undefined;
+  const st: CSSProperties = {};
+  if (t.color) st.color = t.color;
+  if (t.fontStyle && t.fontStyle & 1) st.fontStyle = "italic";
+  if (t.fontStyle && t.fontStyle & 2) st.fontWeight = 600;
+  if (t.fontStyle && t.fontStyle & 4) st.textDecoration = "underline";
+  return st;
+}
+
+/** Line text with syntax colours and its differing stretches wrapped in <mark>. */
+function Marked({ text, ranges, cls, tokens }: { text: string; ranges?: Ranges | null; cls: string; tokens?: LineTokens }) {
+  const hasRanges = !!ranges && ranges.length > 0;
+  const total = tokens ? tokens.reduce((n, t) => n + t.content.length, 0) : -1;
+  if (!tokens || tokens.length === 0 || total !== text.length) {
+    if (!hasRanges) return <>{text}</>;
+    const out: ReactNode[] = [];
+    let pos = 0;
+    ranges!.forEach(([s, e], k) => {
+      if (s > pos) out.push(text.slice(pos, s));
+      out.push(
+        <mark key={k} className={cls}>
+          {text.slice(s, e)}
+        </mark>
+      );
+      pos = e;
+    });
+    if (pos < text.length) out.push(text.slice(pos));
+    return <>{out}</>;
+  }
+  // Cut the line wherever a token or a mark starts or ends, then emit one span per piece.
+  const cuts = new Set<number>([0, text.length]);
+  let acc = 0;
+  for (const t of tokens) {
+    acc += t.content.length;
+    cuts.add(acc);
+  }
+  if (hasRanges) for (const [s, e] of ranges!) cuts.add(s), cuts.add(e);
+  const pts = [...cuts].sort((a, b) => a - b);
   const out: ReactNode[] = [];
-  let pos = 0;
-  ranges.forEach(([s, e], k) => {
-    if (s > pos) out.push(text.slice(pos, s));
-    out.push(
-      <mark key={k} className={cls}>
+  let ti = 0;
+  let tStart = 0;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const s = pts[i];
+    const e = pts[i + 1];
+    if (e <= s) continue;
+    while (ti < tokens.length && tStart + tokens[ti].content.length <= s) tStart += tokens[ti++].content.length;
+    const style = tokens[ti] ? tokenStyle(tokens[ti]) : undefined;
+    const piece = (
+      <span key={i} style={style}>
         {text.slice(s, e)}
-      </mark>
+      </span>
     );
-    pos = e;
-  });
-  if (pos < text.length) out.push(text.slice(pos));
+    const marked = hasRanges && ranges!.some(([a, b]) => s >= a && e <= b);
+    out.push(
+      marked ? (
+        <mark key={i} className={cls}>
+          {piece}
+        </mark>
+      ) : (
+        piece
+      )
+    );
+  }
   return <>{out}</>;
 }
 
@@ -360,7 +415,7 @@ function widestLine(rows: SplitRow[], font: string): number {
  * virtualized (fixed heights), so the file size does not matter. A sticky bar
  * at the bottom carries the horizontal scrollbars so they stay in view.
  */
-function SplitPanes({ rows, isConflict, inlineFor }: { rows: SplitRow[]; isConflict: boolean; inlineFor: InlineFor }) {
+function SplitPanes({ rows, isConflict, inlineFor, tokensFor }: { rows: SplitRow[]; isConflict: boolean; inlineFor: InlineFor; tokensFor: TokensFor }) {
   const outer = useRef<HTMLDivElement>(null);
   const oldPane = useRef<HTMLDivElement>(null);
   const newPane = useRef<HTMLDivElement>(null);
@@ -443,7 +498,7 @@ function SplitPanes({ rows, isConflict, inlineFor }: { rows: SplitRow[]; isConfl
             const inl = r.kind === "change" && r.left && r.right ? inlineFor(r.left, r.right) : null;
             return (
               <div key={v.index} className={`code ${which}${state}`} style={{ top: v.start }}>
-                {l ? <Marked text={l.content} ranges={which === "old" ? inl?.old : inl?.new} cls={which === "old" ? "del" : "add"} /> : ""}
+                {l ? <Marked text={l.content} ranges={which === "old" ? inl?.old : inl?.new} cls={which === "old" ? "del" : "add"} tokens={tokensFor(l)} /> : ""}
               </div>
             );
           })}
@@ -469,7 +524,7 @@ function SplitPanes({ rows, isConflict, inlineFor }: { rows: SplitRow[]; isConfl
   );
 }
 
-function SplitDiff({ rows, isConflict, marks, inlineFor }: { rows: SplitRow[]; isConflict: boolean; marks: BlockMarks; inlineFor: InlineFor }) {
+function SplitDiff({ rows, isConflict, marks, inlineFor, tokensFor }: { rows: SplitRow[]; isConflict: boolean; marks: BlockMarks; inlineFor: InlineFor; tokensFor: TokensFor }) {
   // One grid for the whole file so both columns stay aligned across rows.
   return (
     <div className="split-diff">
@@ -491,11 +546,11 @@ function SplitDiff({ rows, isConflict, marks, inlineFor }: { rows: SplitRow[]; i
               {l?.oldLineno ?? ""}
             </span>
             <span className={`code old${l ? (r.kind === "context" ? "" : marker ? " marker" : " del") : " empty"}`}>
-              {l ? <Marked text={l.content} ranges={inl?.old} cls="del" /> : ""}
+              {l ? <Marked text={l.content} ranges={inl?.old} cls="del" tokens={tokensFor(l)} /> : ""}
             </span>
             <span className="ln">{rt?.newLineno ?? ""}</span>
             <span className={`code new${rt ? (r.kind === "context" ? "" : marker ? " marker" : " add") : " empty"}`}>
-              {rt ? <Marked text={rt.content} ranges={inl?.new} cls="add" /> : ""}
+              {rt ? <Marked text={rt.content} ranges={inl?.new} cls="add" tokens={tokensFor(rt)} /> : ""}
             </span>
           </div>
         );
@@ -504,7 +559,7 @@ function SplitDiff({ rows, isConflict, marks, inlineFor }: { rows: SplitRow[]; i
   );
 }
 
-function UnifiedDiff({ diff, marks, pairs, inlineFor }: { diff: FileDiff; marks: BlockMarks; pairs: Map<DiffLine, DiffLine>; inlineFor: InlineFor }) {
+function UnifiedDiff({ diff, marks, pairs, inlineFor, tokensFor }: { diff: FileDiff; marks: BlockMarks; pairs: Map<DiffLine, DiffLine>; inlineFor: InlineFor; tokensFor: TokensFor }) {
   let row = 0;
   return (
     <div className="unified-diff">
@@ -520,13 +575,131 @@ function UnifiedDiff({ diff, marks, pairs, inlineFor }: { diff: FileDiff; marks:
                 <span className="ln">{l.newLineno ?? ""}</span>
                 <span className="mark">{l.kind === "add" ? "+" : l.kind === "del" ? "−" : " "}</span>
                 <span className="code">
-                  <Marked text={l.content} ranges={ranges} cls={l.kind === "del" ? "del" : "add"} />
+                  <Marked text={l.content} ranges={ranges} cls={l.kind === "del" ? "del" : "add"} tokens={tokensFor(l)} />
                 </span>
               </div>
             );
           })}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** One conflict region of a file with markers. */
+interface ConflictRegion {
+  index: number;
+  startLine: number;
+  midLine: number;
+  endLine: number;
+  oursLabel: string;
+  theirsLabel: string;
+  ours: DiffLine[];
+  base: DiffLine[];
+  theirs: DiffLine[];
+}
+
+type ConflictSegment = { kind: "line"; line: DiffLine; row: number } | { kind: "region"; region: ConflictRegion };
+
+/** Split a conflicted file into plain lines and marker-delimited regions. */
+function parseConflicts(lines: DiffLine[]): ConflictSegment[] {
+  const out: ConflictSegment[] = [];
+  let i = 0;
+  let index = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (!l.content.startsWith("<<<<<<<")) {
+      out.push({ kind: "line", line: l, row: i });
+      i++;
+      continue;
+    }
+    const region: ConflictRegion = {
+      index: index++,
+      startLine: i,
+      midLine: -1,
+      endLine: -1,
+      oursLabel: l.content.slice(7).trim(),
+      theirsLabel: "",
+      ours: [],
+      base: [],
+      theirs: [],
+    };
+    let part: "ours" | "base" | "theirs" = "ours";
+    i++;
+    while (i < lines.length) {
+      const c = lines[i].content;
+      if (c.startsWith("|||||||") && part === "ours") part = "base";
+      else if (c.startsWith("=======") && part !== "theirs") {
+        part = "theirs";
+        region.midLine = i;
+      } else if (c.startsWith(">>>>>>>") && part === "theirs") {
+        region.endLine = i;
+        region.theirsLabel = c.slice(7).trim();
+        i++;
+        break;
+      } else region[part].push(lines[i]);
+      i++;
+    }
+    if (region.endLine < 0) {
+      // Unterminated markers: show the lines as they are.
+      out.push({ kind: "line", line: l, row: region.startLine });
+      for (const x of [...region.ours, ...region.base, ...region.theirs]) out.push({ kind: "line", line: x, row: lines.indexOf(x) });
+    } else out.push({ kind: "region", region });
+  }
+  return out;
+}
+
+/**
+ * Manual merge: the file with each conflict shown as its two sides and
+ * buttons to keep ours, theirs or both. Marker rows carry the block tags so
+ * the scrollbar marks and prev/next still point at the conflicts.
+ */
+function ConflictView({ diff, marks, onPick, tokensFor }: { diff: FileDiff; marks: BlockMarks; onPick: (region: number, choice: "ours" | "theirs" | "both") => void; tokensFor: TokensFor }) {
+  const segments = useMemo(() => parseConflicts(diff.hunks[0]?.lines ?? []), [diff]);
+  const line = (l: DiffLine, cls: string, row: number, key: string | number) => (
+    <div key={key} className={`cf-line${cls ? ` ${cls}` : ""}`} {...blockAttrs(marks, row)}>
+      <span className="ln">{l.newLineno ?? ""}</span>
+      <span className="code">
+        <Marked text={l.content} cls="" tokens={tokensFor(l)} />
+      </span>
+    </div>
+  );
+  return (
+    <div className="conflict-view">
+      {segments.map((seg, i) => {
+        if (seg.kind === "line") return line(seg.line, "", seg.row, i);
+        const r = seg.region;
+        return (
+          <div key={i} className="cf-region">
+            <div className="cf-head" {...blockAttrs(marks, r.startLine)}>
+              <span className="cf-title">Conflict {r.index + 1}</span>
+              <span className="cf-side ours">{r.oursLabel || "ours"}</span>
+              <span className="muted">vs</span>
+              <span className="cf-side theirs">{r.theirsLabel || "theirs"}</span>
+              <span className="spacer" />
+              <button className="btn small" onClick={() => onPick(r.index, "ours")}>
+                Keep {r.oursLabel || "ours"}
+              </button>
+              <button className="btn small" onClick={() => onPick(r.index, "theirs")}>
+                Keep {r.theirsLabel || "theirs"}
+              </button>
+              <button className="btn small ghost" onClick={() => onPick(r.index, "both")}>
+                Keep both
+              </button>
+            </div>
+            {r.ours.map((l, k) => line(l, "ours", r.startLine + 1 + k, `o${k}`))}
+            <div className="cf-sep" {...blockAttrs(marks, r.midLine)}>
+              <span className="ln" />
+              <span className="code">=======</span>
+            </div>
+            {r.theirs.map((l, k) => line(l, "theirs", r.midLine + 1 + k, `t${k}`))}
+            <div className="cf-sep end" {...blockAttrs(marks, r.endLine)}>
+              <span className="ln" />
+              <span className="code">{">>>>>>> "}{r.theirsLabel}</span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -543,10 +716,48 @@ export function DiffView({ repo }: { repo: RepoState }) {
   const setDiffWrap = useUiStore((s) => s.setDiffWrap);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+  const theme = useUiStore((s) => s.resolvedTheme);
+  const [tokens, setTokens] = useState<Map<DiffLine, LineTokens> | null>(null);
+  const lang = useMemo(() => languageFor(target.path), [target.path]);
+
+  // Syntax colours: each side is tokenized as one document so multi-line
+  // constructs keep their state; the result arrives after the plain render.
+  useEffect(() => {
+    setTokens(null);
+    if (!diff || !lang || diff.isBinary || diff.hunks.length === 0) return;
+    if (diff.hunks.reduce((n, h) => n + h.lines.length, 0) > HL_MAX_LINES) return;
+    let cancelled = false;
+    const oldLines: DiffLine[] = [];
+    const newLines: DiffLine[] = [];
+    for (const h of diff.hunks) {
+      for (const l of h.lines) {
+        if (l.kind !== "add") oldLines.push(l);
+        if (l.kind !== "del") newLines.push(l);
+      }
+    }
+    const conflict = target.kind === "conflict";
+    Promise.all([
+      conflict ? Promise.resolve([] as LineTokens[]) : tokenizeLines(oldLines.map((l) => l.content).join("\n"), lang, theme),
+      tokenizeLines(newLines.map((l) => l.content).join("\n"), lang, theme),
+    ])
+      .then(([o, n]) => {
+        if (cancelled || n.length === 0) return;
+        const map = new Map<DiffLine, LineTokens>();
+        if (o.length) oldLines.forEach((l, i) => l.kind === "del" && map.set(l, o[i]));
+        newLines.forEach((l, i) => map.set(l, n[i]));
+        setTokens(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [diff, lang, theme, target.kind]);
+  const tokensFor = useCallback<TokensFor>((l) => tokens?.get(l), [tokens]);
   const statusKey = repo.status ? `${repo.status.staged.length}/${repo.status.unstaged.length}/${repo.refSig}` : "";
   const full = view === "split";
   // Without soft wrap the two sides scroll independently in their own panes.
-  const panes = view === "split" && !wrap;
+  const panes = view === "split" && !wrap && target.kind !== "conflict";
   const isConflict = target.kind === "conflict";
   const showRows = !!diff && !diff.isBinary && diff.hunks.length > 0;
 
@@ -560,7 +771,7 @@ export function DiffView({ repo }: { repo: RepoState }) {
     return () => {
       cancelled = true;
     };
-  }, [repo.path, target.kind, target.oid, target.path, target.oldPath, full, target.kind === "commit" ? "" : statusKey]);
+  }, [repo.path, target.kind, target.oid, target.path, target.oldPath, full, reload, target.kind === "commit" ? "" : statusKey]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -571,8 +782,17 @@ export function DiffView({ repo }: { repo: RepoState }) {
   }, [repo.path, showDiff]);
 
   // ---- change blocks: scrollbar marks and previous/next navigation ----
-  const splitRows = useMemo(() => (diff && view === "split" ? buildSplitRows(diff.hunks, diff.hunks.length > 1) : null), [diff, view]);
-  const blocks = useMemo(() => (!diff ? [] : splitRows ? splitBlocks(splitRows) : unifiedBlocks(diff.hunks)), [diff, splitRows]);
+  const splitRows = useMemo(() => (diff && view === "split" && !isConflict ? buildSplitRows(diff.hunks, diff.hunks.length > 1) : null), [diff, view, isConflict]);
+  const blocks = useMemo(() => {
+    if (!diff) return [];
+    if (isConflict) {
+      // One block per conflict region, so prev/next and the marks step between conflicts.
+      return parseConflicts(diff.hunks[0]?.lines ?? [])
+        .filter((seg): seg is Extract<ConflictSegment, { kind: "region" }> => seg.kind === "region")
+        .map((seg) => ({ start: seg.region.startLine, end: seg.region.endLine, kind: "mod" as BlockKind }));
+    }
+    return splitRows ? splitBlocks(splitRows) : unifiedBlocks(diff.hunks);
+  }, [diff, splitRows, isConflict]);
   const marks = useMemo(() => markBlocks(blocks), [blocks]);
   const pairs = useMemo(() => (diff ? pairLines(diff.hunks) : new Map<DiffLine, DiffLine>()), [diff]);
   const inlineFor = useMemo(() => createInlineCache(), [diff]);
@@ -711,6 +931,38 @@ export function DiffView({ repo }: { repo: RepoState }) {
 
   const close = () => showDiff(repo.path, null);
   const busy = !!repo.busy;
+
+  // ---- conflict handling: file navigation, per-region choices, finishing the operation ----
+  const conflicted = repo.status?.conflicted ?? [];
+  const conflictIdx = conflicted.findIndex((e) => e.path === target.path);
+  const opState = repo.status?.state ?? "clean";
+  const opLabel = opState === "merge" ? "merge" : opState === "cherrypick" ? "cherry-pick" : opState === "revert" ? "revert" : opState;
+  const openConflict = (i: number) => {
+    const e = conflicted[i];
+    if (e) showDiff(repo.path, { kind: "conflict", path: e.path, oldPath: e.oldPath });
+  };
+  /** After this file is resolved: move on to the next conflicted file, or back to the changes panel. */
+  const afterResolved = () => {
+    const next = conflicted.find((e) => e.path !== target.path);
+    showDiff(repo.path, next ? { kind: "conflict", path: next.path, oldPath: next.oldPath } : null);
+  };
+  const pickRegion = async (region: number, choice: "ours" | "theirs" | "both") => {
+    const left = await actions.resolveConflictBlock(repo.path, target.path, region, choice);
+    if (left === 0) afterResolved();
+    else if (left !== undefined) setReload((n) => n + 1);
+  };
+  const takeSide = async (side: "ours" | "theirs") => {
+    const r = await actions.resolveConflict(repo.path, target.path, side);
+    if (r !== undefined) afterResolved();
+  };
+  const markResolved = async () => {
+    const r = await actions.markResolved(repo.path, [target.path]);
+    if (r !== undefined) afterResolved();
+  };
+  const finishOperation = async () => {
+    const r = opState === "rebase" ? await actions.rebaseContinue(repo.path) : await actions.commit(repo.path, repo.status?.mergeMessage || `Merge`, false);
+    if (r !== undefined) showDiff(repo.path, null);
+  };
   const kindLabel =
     target.kind === "unstaged" ? "Unstaged changes" : target.kind === "staged" ? "Staged changes" : target.kind === "conflict" ? "Conflicted file" : `Commit ${target.oid?.slice(0, 7)}`;
 
@@ -743,6 +995,8 @@ export function DiffView({ repo }: { repo: RepoState }) {
             </button>
           </span>
         ) : null}
+        {isConflict ? null : (
+          <>
         <span className="segmented tiny" title="Diff layout">
           <button className={view === "unified" ? "active" : ""} title="Unified (changed hunks)" onClick={() => setDiffView("unified")}>
             <AlignJustify />
@@ -756,16 +1010,42 @@ export function DiffView({ repo }: { repo: RepoState }) {
             <WrapText />
           </button>
         </span>
+          </>
+        )}
         {isConflict ? (
           <>
-            <button className="btn small" disabled={busy} onClick={() => void actions.resolveConflict(repo.path, target.path, "ours")}>
+            {conflicted.length > 1 ? (
+              <span className="diff-nav" title="Conflicted files">
+                <button className="icon-btn" title="Previous conflicted file" disabled={conflictIdx <= 0} onClick={() => openConflict(conflictIdx - 1)}>
+                  <ChevronLeft />
+                </button>
+                <span className="count">
+                  {conflictIdx + 1}/{conflicted.length}
+                </span>
+                <button className="icon-btn" title="Next conflicted file" disabled={conflictIdx < 0 || conflictIdx >= conflicted.length - 1} onClick={() => openConflict(conflictIdx + 1)}>
+                  <ChevronRight />
+                </button>
+              </span>
+            ) : null}
+            <button className="btn small" disabled={busy} title="Keep our side for the whole file" onClick={() => void takeSide("ours")}>
               Take ours
             </button>
-            <button className="btn small" disabled={busy} onClick={() => void actions.resolveConflict(repo.path, target.path, "theirs")}>
+            <button className="btn small" disabled={busy} title="Keep their side for the whole file" onClick={() => void takeSide("theirs")}>
               Take theirs
             </button>
-            <button className="btn small primary" disabled={busy} onClick={() => void actions.markResolved(repo.path, [target.path])}>
+            <button className="btn small" disabled={busy} title="Stage the file as it is now" onClick={() => void markResolved()}>
               <Check /> Mark resolved
+            </button>
+            <button className="btn small danger ghost" disabled={busy || opState === "clean"} onClick={() => actions.abort(repo.path, opLabel)}>
+              Abort {opLabel}
+            </button>
+            <button
+              className="btn small primary"
+              disabled={busy || opState === "clean" || conflicted.length > 0}
+              title={conflicted.length ? `${conflicted.length} conflicted file(s) left` : undefined}
+              onClick={() => void finishOperation()}
+            >
+              {opState === "rebase" ? "Continue rebase" : `Commit ${opLabel}`}
             </button>
           </>
         ) : null}
@@ -785,12 +1065,14 @@ export function DiffView({ repo }: { repo: RepoState }) {
           {diff?.isBinary ? <div className="diff-empty">Binary file. No text diff available.</div> : null}
           {diff && !diff.isBinary && diff.hunks.length === 0 && !error ? <div className="diff-empty">No changes to display.</div> : null}
           {diff && showRows ? (
-            !splitRows ? (
-              <UnifiedDiff diff={diff} marks={marks} pairs={pairs} inlineFor={inlineFor} />
+            isConflict ? (
+              <ConflictView diff={diff} marks={marks} onPick={(i, c) => void pickRegion(i, c)} tokensFor={tokensFor} />
+            ) : !splitRows ? (
+              <UnifiedDiff diff={diff} marks={marks} pairs={pairs} inlineFor={inlineFor} tokensFor={tokensFor} />
             ) : wrap ? (
-              <SplitDiff rows={splitRows} isConflict={isConflict} marks={marks} inlineFor={inlineFor} />
+              <SplitDiff rows={splitRows} isConflict={isConflict} marks={marks} inlineFor={inlineFor} tokensFor={tokensFor} />
             ) : (
-              <SplitPanes rows={splitRows} isConflict={isConflict} inlineFor={inlineFor} />
+              <SplitPanes rows={splitRows} isConflict={isConflict} inlineFor={inlineFor} tokensFor={tokensFor} />
             )
           ) : null}
         </div>

@@ -83,3 +83,19 @@ jobs:
           $ver = $tag.TrimStart("v")
           Copy-Item src-tauri/target/release/vibegitty.exe "VibeGitty-$ver-x64-portable.exe"
           gh release upload $tag "VibeGitty-$ver-x64-portable.exe" --clobber --repo ${{ github.repository }}
+
+  checksums:
+    # Once every package is attached, publish SHA-256 sums for all of them.
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download the release assets and upload SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          mkdir assets
+          gh release download "$tag" --repo ${{ github.repository }} -D assets
+          (cd assets && sha256sum * > ../SHA256SUMS.txt)
+          cat SHA256SUMS.txt
+          gh release upload "$tag" SHA256SUMS.txt --clobber --repo ${{ github.repository }}

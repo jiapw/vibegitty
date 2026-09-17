@@ -22,9 +22,10 @@
   --del-bg: rgba(248, 81, 73, 0.16);
   --del-mark: rgba(248, 81, 73, 0.42);
   --add-mark: rgba(63, 185, 80, 0.4);
+  --cf-theirs-bg: rgba(79, 140, 255, 0.16);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", "PingFang SC",
     "Microsoft YaHei", sans-serif;
-  --mono: "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "SF Mono", Menlo, monospace;
+  --mono: "Cascadia Mono", "Cascadia Code", "JetBrains Mono", "Fira Code", Consolas, "SF Mono", Menlo, monospace;
   --scroll: #3a4353;
   --scroll-hover: #4a5568;
   --hunk-fg: #7ea6ff;
@@ -81,6 +82,7 @@
   --hatch: rgba(0, 0, 0, 0.035);
   --del-mark: rgba(248, 81, 73, 0.3);
   --add-mark: rgba(63, 185, 80, 0.34);
+  --cf-theirs-bg: rgba(43, 111, 219, 0.14);
   --backdrop: rgba(30, 36, 48, 0.4);
   --lane-wip: #8a94a4;
   --lane-0: #2b6fdb;
@@ -119,6 +121,9 @@ body {
   color: var(--text);
   font-family: var(--font);
   font-size: 13px;
+  /* Code must read verbatim: programming fonts turn "!=" into a single glyph. */
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0, "dlig" 0;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
   user-select: none;
@@ -242,6 +247,7 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
+  font-size: 14px;
 }
 .tab .tab-close {
   border: none;
@@ -1419,6 +1425,72 @@ a {
 .split-hbar > div > div {
   height: 1px;
 }
+/* Manual merge view for conflicted files. */
+.conflict-view {
+  padding-bottom: 20px;
+}
+.cf-line,
+.cf-sep {
+  display: flex;
+  height: 20px;
+  white-space: pre;
+}
+.cf-line .ln,
+.cf-sep .ln {
+  width: 46px;
+  flex-shrink: 0;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--muted);
+  user-select: none;
+}
+.cf-line .code,
+.cf-sep .code {
+  flex: 1;
+  padding: 0 8px;
+}
+.cf-line.ours {
+  background: var(--add-bg);
+}
+.cf-line.theirs {
+  background: var(--cf-theirs-bg);
+}
+.cf-sep .code {
+  color: var(--muted);
+}
+.cf-region {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.cf-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 12px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font);
+  font-size: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.cf-head .cf-title {
+  font-weight: 600;
+}
+.cf-head .cf-side {
+  font-family: var(--mono);
+}
+.cf-head .cf-side.ours {
+  color: var(--add);
+}
+.cf-head .cf-side.theirs {
+  color: var(--blue);
+}
+.cf-head .spacer {
+  flex: 1;
+}
+
 /* Character-level differences inside a changed line pair. */
 .code mark {
   color: inherit;

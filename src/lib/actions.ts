@@ -20,13 +20,16 @@ function describeMerge(path: string, r: MergeResult, verb: string): string | nul
       return `${verb}: fast-forwarded to ${r.oid?.slice(0, 7)}`;
     case "merged":
       return `${verb}: merge commit ${r.oid?.slice(0, 7)} created`;
-    case "conflicts":
-      toast(
-        "error",
-        `${verb} produced ${r.conflicts.length} conflicted file(s). Resolve them in the changes panel, then commit.`
-      );
+    case "rebased":
+      return `${verb}: done, now at ${r.oid?.slice(0, 7)}`;
+    case "conflicts": {
+      const finish = verb.toLowerCase().includes("rebase") ? "continue the rebase" : "commit";
+      toast("error", `${verb} produced ${r.conflicts.length} conflicted file(s). Resolve them, then ${finish}.`);
       selectWip(path);
+      // Open the first conflicted file straight away for manual resolution.
+      useReposStore.getState().showDiff(path, { kind: "conflict", path: r.conflicts[0] });
       return null;
+    }
   }
 }
 
@@ -71,10 +74,10 @@ export const actions = {
       success: (r) => `Fetched ${r.join(", ")}`,
     });
   },
-  pull(path: string, ffOnly = false) {
-    return run(path, "Pulling", () => api.pull(path, ffOnly), {
+  pull(path: string, mode: "merge" | "ff" | "rebase" = "merge") {
+    return run(path, mode === "rebase" ? "Pulling with rebase" : "Pulling", () => api.pull(path, mode), {
       success: (r) => {
-        const msg = describeMerge(path, r.merge, "Pull");
+        const msg = describeMerge(path, r.merge, mode === "rebase" ? "Pull with rebase" : "Pull");
         if (msg && r.lfs && (r.lfs.downloaded || r.lfs.failed.length)) {
           return `${msg}. LFS: ${r.lfs.downloaded} downloaded${r.lfs.failed.length ? `, ${r.lfs.failed.length} failed` : ""}`;
         }
@@ -125,6 +128,25 @@ export const actions = {
   mergeInto(path: string, source: string, ffOnly = false) {
     return run(path, `Merging ${source}`, () => api.mergeBranch(path, source, ffOnly), {
       success: (r) => describeMerge(path, r, `Merge ${source}`),
+    });
+  },
+  rebaseOnto(path: string, onto: string) {
+    return run(path, `Rebasing onto ${onto}`, () => api.rebaseBranch(path, onto), {
+      success: (r) => describeMerge(path, r, `Rebase onto ${onto}`),
+    });
+  },
+  rebaseContinue(path: string) {
+    return run(path, "Continuing rebase", () => api.rebaseContinue(path), {
+      success: (r) => describeMerge(path, r, "Rebase"),
+    });
+  },
+  rebaseSkip(path: string) {
+    confirmDialog({
+      title: "Skip commit",
+      message: "Drop the commit being replayed and continue the rebase with the next one?",
+      confirmLabel: "Skip",
+      danger: true,
+      onConfirm: () => void run(path, "Skipping commit", () => api.rebaseSkip(path), { success: (r) => describeMerge(path, r, "Rebase") }),
     });
   },
   deleteBranch(path: string, name: string) {
@@ -279,6 +301,10 @@ export const actions = {
   resolveConflict(path: string, file: string, side: "ours" | "theirs") {
     return run(path, "Resolving", () => api.resolveConflict(path, file, side), { refreshLog: false });
   },
+  /** Resolve one conflict region of a file; resolves to the number of regions left. */
+  resolveConflictBlock(path: string, file: string, block: number, choice: "ours" | "theirs" | "both") {
+    return run(path, "Resolving", () => api.resolveConflictBlock(path, file, block, choice), { refreshLog: false });
+  },
   resolveConflicts(path: string, files: string[], side: "ours" | "theirs") {
     return run(
       path,
@@ -291,6 +317,12 @@ export const actions = {
   },
   markResolved(path: string, files: string[]) {
     return run(path, "Resolving", () => api.stagePaths(path, files), { refreshLog: false });
+  },
+  /** Show a repository file in Explorer / Finder / the file manager. */
+  reveal(path: string, relPath: string) {
+    const sep = path.includes("\\") ? "\\" : "/";
+    const abs = path.replace(/[\\/]+$/, "") + sep + relPath.split("/").join(sep);
+    api.revealPath(abs).catch((e) => toast("error", errorMessage(e)));
   },
   addToGitignore(path: string, patterns: string[]) {
     return run(path, "Updating .gitignore", () => api.addGitignorePatterns(path, patterns), {

@@ -72,13 +72,19 @@ pub fn current_upstream(repo: &Repository) -> AppResult<(String, String, String)
     Ok((branch_name, remote, upstream_name))
 }
 
-pub fn pull(ctx: &OpContext, repo: &Repository, settings: &Settings, ff_only: bool) -> AppResult<PullResult> {
+/// Fetch the upstream, then integrate it. `mode` is "merge", "ff" (fast-forward
+/// only) or "rebase".
+pub fn pull(ctx: &OpContext, repo: &Repository, settings: &Settings, mode: &str) -> AppResult<PullResult> {
     let (_branch, remote, upstream_name) = current_upstream(repo)?;
     fetch(ctx, repo, Some(&remote), false)?;
     let upstream_ref = repo.find_reference(&format!("refs/remotes/{upstream_name}"))?;
     let annotated = repo.reference_to_annotated_commit(&upstream_ref)?;
-    let msg = format!("Merge remote-tracking branch '{upstream_name}'");
-    let merge = merge::merge_annotated(repo, settings, &annotated, &msg, ff_only)?;
+    let merge = if mode == "rebase" {
+        super::rebase::rebase_annotated(repo, settings, &annotated)?
+    } else {
+        let msg = format!("Merge remote-tracking branch '{upstream_name}'");
+        merge::merge_annotated(repo, settings, &annotated, &msg, mode == "ff")?
+    };
     Ok(PullResult { remote, merge, lfs: None })
 }
 

@@ -80,6 +80,8 @@ export interface WorkingStatus {
   state: string;
   mergeMessage: string | null;
   mergeHeads: string[];
+  /** "step/total" while a rebase is in progress. */
+  rebaseProgress: string | null;
 }
 
 export interface RemoteInfo {
@@ -152,7 +154,7 @@ export interface DiffTarget {
 }
 
 export interface MergeResult {
-  kind: "up_to_date" | "fast_forward" | "merged" | "conflicts";
+  kind: "up_to_date" | "fast_forward" | "merged" | "rebased" | "conflicts";
   oid: string | null;
   conflicts: string[];
 }

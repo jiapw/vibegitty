@@ -366,14 +366,14 @@ pub async fn fetch(app: AppHandle, state: State<'_, AppState>, repo_path: String
 }
 
 #[tauri::command]
-pub async fn pull(app: AppHandle, state: State<'_, AppState>, repo_path: String, ff_only: bool) -> AppResult<PullResult> {
+pub async fn pull(app: AppHandle, state: State<'_, AppState>, repo_path: String, mode: String) -> AppResult<PullResult> {
     let c = ctx(&app, &state, &repo_path, "pull");
     let c2 = c.clone();
     let settings = state.settings();
     let rp = repo_path.clone();
     let r = blocking(move || {
         let repo = git::open(&rp)?;
-        let res = git::remote::pull(&c2, &repo, &settings, ff_only)?;
+        let res = git::remote::pull(&c2, &repo, &settings, &mode)?;
         Ok((res, crate::lfs::repo_uses_lfs(&repo)))
     })
     .await;
@@ -473,6 +473,47 @@ pub async fn abort_operation(repo_path: String) -> AppResult<()> {
 #[tauri::command]
 pub async fn resolve_conflict(repo_path: String, path: String, side: String) -> AppResult<()> {
     blocking(move || git::merge::resolve_conflict(&git::open(&repo_path)?, &path, &side)).await
+}
+
+/// Show a file in Explorer / Finder / the file manager. A path that no
+/// longer exists (deleted file) opens its nearest existing folder instead.
+#[tauri::command]
+pub fn reveal_path(path: String) -> AppResult<()> {
+    let p = std::path::Path::new(&path);
+    if p.exists() {
+        return tauri_plugin_opener::reveal_item_in_dir(p).map_err(|e| crate::error::AppError::Msg(format!("Cannot open the file manager: {e}")));
+    }
+    let mut dir = p.parent();
+    while let Some(d) = dir {
+        if d.is_dir() {
+            return tauri_plugin_opener::open_path(d, None::<&str>).map_err(|e| crate::error::AppError::Msg(format!("Cannot open the file manager: {e}")));
+        }
+        dir = d.parent();
+    }
+    crate::error::err("The path does not exist")
+}
+
+#[tauri::command]
+pub async fn resolve_conflict_block(repo_path: String, path: String, block: usize, choice: String) -> AppResult<usize> {
+    blocking(move || git::merge::resolve_conflict_block(&git::open(&repo_path)?, &path, block, &choice)).await
+}
+
+#[tauri::command]
+pub async fn rebase_branch(state: State<'_, AppState>, repo_path: String, onto: String) -> AppResult<MergeResult> {
+    let settings = state.settings();
+    blocking(move || git::rebase::rebase_onto(&git::open(&repo_path)?, &settings, &onto)).await
+}
+
+#[tauri::command]
+pub async fn rebase_continue(state: State<'_, AppState>, repo_path: String) -> AppResult<MergeResult> {
+    let settings = state.settings();
+    blocking(move || git::rebase::rebase_continue(&git::open(&repo_path)?, &settings)).await
+}
+
+#[tauri::command]
+pub async fn rebase_skip(state: State<'_, AppState>, repo_path: String) -> AppResult<MergeResult> {
+    let settings = state.settings();
+    blocking(move || git::rebase::rebase_skip(&git::open(&repo_path)?, &settings)).await
 }
 
 #[tauri::command]

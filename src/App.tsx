@@ -85,7 +85,7 @@ export default function App() {
     ];
     const onCtx = (e: MouseEvent) => {
       const t = e.target as HTMLElement | null;
-      if (!t?.closest("input, textarea, [contenteditable], .diff-body")) e.preventDefault();
+      if (!t?.closest("input, textarea, [contenteditable]")) e.preventDefault();
     };
     document.addEventListener("contextmenu", onCtx);
     return () => {

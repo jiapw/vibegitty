@@ -30,6 +30,7 @@ export const api = {
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   saveUiPrefs: (prefs: Record<string, unknown>) => invoke<void>("save_ui_prefs", { prefs }),
   removeRecentRepo: (path: string) => invoke<void>("remove_recent_repo", { path }),
+  revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   setActiveRepo: (path: string | null) => invoke<void>("set_active_repo", { path }),
   closeRepo: (path: string) => invoke<void>("close_repo", { path }),
 
@@ -74,7 +75,12 @@ export const api = {
 
   // remote operations
   fetch: (repoPath: string, remote: string | null, prune: boolean) => invoke<string[]>("fetch", { repoPath, remote, prune }),
-  pull: (repoPath: string, ffOnly: boolean) => invoke<PullResult>("pull", { repoPath, ffOnly }),
+  pull: (repoPath: string, mode: "merge" | "ff" | "rebase") => invoke<PullResult>("pull", { repoPath, mode }),
+  rebaseBranch: (repoPath: string, onto: string) => invoke<MergeResult>("rebase_branch", { repoPath, onto }),
+  rebaseContinue: (repoPath: string) => invoke<MergeResult>("rebase_continue", { repoPath }),
+  rebaseSkip: (repoPath: string) => invoke<MergeResult>("rebase_skip", { repoPath }),
+  resolveConflictBlock: (repoPath: string, path: string, block: number, choice: "ours" | "theirs" | "both") =>
+    invoke<number>("resolve_conflict_block", { repoPath, path, block, choice }),
   push: (repoPath: string, remote: string | null, branch: string | null, force: boolean, setUpstream: boolean) =>
     invoke<PushResult>("push", { repoPath, remote, branch, force, setUpstream }),
   deleteRemoteBranch: (repoPath: string, remote: string, branch: string) =>

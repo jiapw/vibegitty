@@ -87,6 +87,8 @@ pub struct WorkingStatus {
     pub state: String,
     pub merge_message: Option<String>,
     pub merge_heads: Vec<String>,
+    /// "step/total" while a rebase is in progress.
+    pub rebase_progress: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -178,7 +180,7 @@ pub struct DiffTarget {
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeResult {
-    /// up_to_date | fast_forward | merged | conflicts
+    /// up_to_date | fast_forward | merged | rebased | conflicts
     pub kind: String,
     pub oid: Option<String>,
     pub conflicts: Vec<String>,
