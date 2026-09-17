@@ -67,10 +67,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "VibeGitty ${{ github.event.inputs.tag || github.ref_name }} (beta)"
-          releaseBody: "Beta release. See the notes on this page for details."
+          releaseName: "VibeGitty ${{ github.event.inputs.tag || github.ref_name }}"
+          releaseBody: "See the release notes on this page."
           releaseDraft: false
-          prerelease: true
+          # Tags like v1.2.0-beta.1 become pre-releases; plain version tags are stable.
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
           args: ${{ matrix.args }} ${{ matrix.features }}
 
       - name: Upload the portable Windows executable
