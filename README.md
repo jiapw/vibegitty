@@ -113,6 +113,66 @@ npm run tauri build -- --features vendored-openssl
 The version is set in three places: `package.json`, `src-tauri/tauri.conf.json` and
 `src-tauri/Cargo.toml`. It is shown at the top right of the window and in Settings.
 
+### The GitHub client secret file
+
+GitHub sign-in in the browser (the GitKraken-style flow) needs the OAuth App's
+*client secret* compiled into the binary. The secret is deliberately **not** in the
+repository; each build picks it up from `src-tauri/github-client-secret.txt`.
+
+**What it changes**
+
+| | Build **with** the file | Build **without** the file |
+| --- | --- | --- |
+| Accounts → *Sign in with GitHub* | Opens github.com in the browser; after you approve, the app receives the token by itself and comes back to the front. If you approved before, no page to click through at all. | Falls back to GitHub's *device flow*: the app shows an 8-character code, you enter it at github.com/login/device and approve there. |
+| Everything else (push / pull / LFS / clone list, GitLab, Gitea, tokens) | identical | identical |
+| Accounts dialog text | says the sign-in completes in the browser | describes the device flow |
+
+The build itself succeeds either way; `build.rs` only prints nothing when the file is
+missing.
+
+**How to get the secret**
+
+1. Sign in to GitHub and open <https://github.com/settings/developers> → **OAuth Apps**.
+2. Open the app whose client id is built into VibeGitty (`BUILTIN_GITHUB_CLIENT_ID` in
+   `src-tauri/src/config.rs`). If you build a fork, create your own app with
+   **New OAuth App**: any name and homepage URL, *Authorization callback URL*
+   `http://127.0.0.1:47831/callback`, and *Enable Device Flow* ticked (that keeps the
+   fallback working); then build with `VIBEGITTY_GITHUB_CLIENT_ID` set to its client id.
+3. Under **Client secrets** click **Generate a new client secret** (GitHub may ask for
+   your password or 2FA). Copy the 40-character hex string right away: it is shown only
+   once. Lost it? Generate a new one and delete the old one; already issued user tokens
+   keep working.
+
+**How to add it**
+
+Create `src-tauri/github-client-secret.txt` (next to `Cargo.toml`) containing only the
+40 characters: one line, no quotes, no spaces, no extra lines.
+
+```bash
+# bash / Git Bash
+printf '%s' '<the 40-character client secret>' > src-tauri/github-client-secret.txt
+```
+
+```powershell
+# PowerShell
+Set-Content -NoNewline -Encoding ascii src-tauri\github-client-secret.txt '<the 40-character client secret>'
+```
+
+Then build as usual (`npm run tauri build` or `npm run tauri build -- --no-bundle`).
+`.gitignore` already lists the file, so it can never be committed by accident. Setting the
+`VIBEGITTY_GITHUB_CLIENT_SECRET` environment variable instead of creating the file also
+works and takes precedence. Cargo re-runs `build.rs` whenever the file or the variable
+changes, so switching secrets does not need a clean build.
+
+For the GitHub Actions release workflow, store the same value as the repository secret
+`VIBEGITTY_GITHUB_CLIENT_SECRET` (Settings → Secrets and variables → Actions, or
+`gh secret set VIBEGITTY_GITHUB_CLIENT_SECRET < src-tauri/github-client-secret.txt`);
+without it the CI packages fall back to the device flow.
+
+Note that the secret ends up inside the shipped executable, as with GitHub Desktop and
+other native clients. Someone extracting it can only present the app's identity on
+GitHub's authorization page; it gives no access to any account.
+
 ### Portable (single-file) Windows build
 
 `src-tauri/target/release/vibegitty.exe` produced by `npm run tauri build` is
@@ -147,68 +207,18 @@ Two OAuth flows are supported for github.com and GitHub Enterprise:
   `http://127.0.0.1:47831/callback`, the app exchanges the code for a token and comes
   back to the front. If you have authorized the app before, GitHub skips the approval
   page and the callback page appears right away. GitHub requires the OAuth App's
-  *client secret* for this flow, so it is only used when one is compiled in (see
-  below).
-- **Device flow**: used automatically when no client secret is compiled in. A one-time
-  code is shown in the app and confirmed on github.com; the OAuth App must have
-  *Device Flow* enabled.
+  *client secret* for this flow, so it is only available in builds that include the
+  secret file described in [The GitHub client secret file](#the-github-client-secret-file).
+- **Device flow**: used automatically by builds without the secret. A one-time code is
+  shown in the app and confirmed on github.com; the OAuth App must have *Device Flow*
+  enabled.
 
 A client id for github.com is built into the app (`BUILTIN_GITHUB_CLIENT_ID` in
 `src-tauri/src/config.rs`, overridable with the `VIBEGITTY_GITHUB_CLIENT_ID` environment
-variable at build time). The matching client secret is **not** in the sources; every
-build that should offer browser sign-in needs it supplied as described next.
-
-#### Getting the client secret
-
-1. Sign in to GitHub and open <https://github.com/settings/developers> → **OAuth Apps**.
-2. Open the app whose client id is built in (or create one with **New OAuth App**:
-   any name and homepage, *Authorization callback URL*
-   `http://127.0.0.1:47831/callback` or `http://127.0.0.1/callback`, and *Enable Device
-   Flow* ticked so the fallback works). If you created a new app, build with
-   `VIBEGITTY_GITHUB_CLIENT_ID` set to its client id.
-3. In the **Client secrets** section click **Generate a new client secret** (GitHub may
-   ask for your password or 2FA). The 40-character hex string is shown **only once**;
-   copy it immediately. If you lose it, generate another one and delete the old one;
-   tokens already issued to users keep working.
-
-#### Where to put it
-
-Save the secret as a single line in `src-tauri/github-client-secret.txt` (next to
-`Cargo.toml`): only the 40 characters, no quotes, spaces or extra lines. The file is
-listed in `.gitignore`, so it never enters the repository. Alternatively set the
-`VIBEGITTY_GITHUB_CLIENT_SECRET` environment variable for the build; it takes precedence
-over the file.
-
-`src-tauri/build.rs` reads either source and compiles the value into the binary, so the
-secret is present in the shipped executable (as in GitHub Desktop and other native
-clients). Anyone extracting it can only impersonate the app on GitHub's authorization
-page; it grants no access to accounts.
-
-#### Building a release with browser sign-in
-
-```bash
-# 1. put the secret in place: one line, nothing else (or export VIBEGITTY_GITHUB_CLIENT_SECRET)
-printf '%s' '<the 40-character client secret>' > src-tauri/github-client-secret.txt
-
-# 2. build the executable
-npm install
-npm run tauri build -- --no-bundle
-
-# 3. Windows portable exe: copy it under the release name; put a VibeGittyData folder
-#    next to it if settings should live beside the exe
-cp src-tauri/target/release/vibegitty.exe release/VibeGitty-<version>-x64-portable.exe
-```
-
-The same commands with `npm run tauri build` (no `--no-bundle`) produce installers.
-Cargo re-runs the build script whenever the secret file or the environment variable
-changes, so switching secrets does not need a clean build. To check a build, open
-**Accounts → Add account** with GitHub selected: with the secret compiled in the
-dialog says the sign-in completes in the browser; without it, it describes the device
-flow.
-
-GitHub Enterprise servers use their own OAuth App: enter its client id, and optionally
-the client secret, in the sign-in dialog; both are remembered in Settings. A personal
-access token with the `repo` scope works everywhere as an alternative.
+variable at build time). GitHub Enterprise servers use their own OAuth App: enter its
+client id, and optionally the client secret, in the sign-in dialog; both are remembered
+in Settings. A personal access token with the `repo` scope works everywhere as an
+alternative.
 
 ### GitLab, Gitea / Forgejo
 
