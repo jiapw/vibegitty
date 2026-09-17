@@ -12,6 +12,8 @@ implemented in-process, SSH uses libssh2, HTTPS uses rustls. No external `git`,
 
 Source: <https://github.com/jiapw/vibegitty>
 
+![VibeGitty: commit graph with branch, tag and remote labels, the working-directory panel with unstaged and staged files, and the commit box](docs/screenshot.png)
+
 ## Features
 
 - Open, clone and initialize repositories; several repositories open at once (tabs),
