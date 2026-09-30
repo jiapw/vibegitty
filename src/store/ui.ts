@@ -23,6 +23,7 @@ export type ModalSpec =
   | { kind: "newBranch"; target?: string; targetLabel?: string }
   | { kind: "newTag"; target?: string; targetLabel?: string }
   | { kind: "accounts"; reauth?: string }
+  | { kind: "tabWidth"; dir: string }
   | { kind: "settings" }
   | { kind: "remotes" }
   | { kind: "stash" }

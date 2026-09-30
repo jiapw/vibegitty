@@ -561,3 +561,17 @@ fn rebase_replays_commits_and_handles_conflicts() {
     commit::commit(&repo, &settings(), "Merge main", false).unwrap();
     assert_eq!(status::working_status(&repo).unwrap().state, "clean");
 }
+
+#[test]
+fn editorconfig_tab_size_follows_the_nearest_rules() {
+    let dir = tmp("editorconfig");
+    write(&dir, ".editorconfig", "root = true\n\n[*]\nindent_size = 4\n\n[*.py]\nindent_size = 2\n\n[Makefile]\nindent_style = tab\ntab_width = 8\n");
+    write(&dir, "src/.editorconfig", "[*.ts]\nindent_size = 3\n");
+    assert_eq!(grepo::editorconfig_tab_size(&dir, "main.rs"), Some(4));
+    assert_eq!(grepo::editorconfig_tab_size(&dir, "tools/build.py"), Some(2));
+    assert_eq!(grepo::editorconfig_tab_size(&dir, "Makefile"), Some(8));
+    assert_eq!(grepo::editorconfig_tab_size(&dir, "src/app.ts"), Some(3));
+    assert_eq!(grepo::editorconfig_tab_size(&dir, "src/app.rs"), Some(4));
+    let empty = tmp("editorconfig-none");
+    assert_eq!(grepo::editorconfig_tab_size(&empty, "a.txt"), None);
+}

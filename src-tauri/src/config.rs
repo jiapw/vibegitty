@@ -108,6 +108,8 @@ pub struct AppConfig {
     pub open_repos: Vec<String>,
     pub active_repo: Option<String>,
     pub recent_repos: Vec<String>,
+    /// Per-repository preferences keyed by repository path (tab width and the like).
+    pub repo_prefs: serde_json::Map<String, serde_json::Value>,
     pub accounts: Vec<Account>,
     pub settings: Settings,
     /// Frontend layout preferences (panel widths, list/diff modes, split

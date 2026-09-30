@@ -46,7 +46,8 @@ Packages for every release are on the [Releases page](https://github.com/jiapw/v
   themes), character-level highlighting inside changed lines, change marks on the
   scrollbar, previous / next change buttons, and the view opens at the first change. In
   side-by-side mode without wrapping each side clips and scrolls long lines on its own
-  while both sides stay aligned and in sync.
+  while both sides stay aligned and in sync. Tab width (2 / 4 / 8, or Auto from the
+  repository's `.editorconfig`) is remembered per repository, with per-folder overrides.
 - Branches: create, checkout, checkout remote branch (creates a tracking branch),
   rename, delete (with force fallback), set upstream, ahead/behind counts.
 - Fetch (with prune), pull (merge or fast-forward only), push (set upstream, force),

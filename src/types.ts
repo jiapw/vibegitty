@@ -241,10 +241,21 @@ export interface Settings {
   theme: "system" | "dark" | "light";
 }
 
+/** Tab width in columns, or "auto" to follow .editorconfig (default 4). */
+export type TabSetting = "auto" | 2 | 4 | 8;
+
+/** Preferences stored per repository. */
+export interface RepoPrefs {
+  tabSize?: TabSetting;
+  /** Repository-relative folder → setting for it and everything below; the nearest folder wins. */
+  tabOverrides?: Record<string, TabSetting>;
+}
+
 export interface AppConfig {
   openRepos: string[];
   activeRepo: string | null;
   recentRepos: string[];
+  repoPrefs: Record<string, RepoPrefs>;
   accounts: Account[];
   settings: Settings;
   ui: Record<string, unknown>;

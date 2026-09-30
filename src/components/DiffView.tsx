@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { AlignJustify, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Columns2, Loader2, WrapText, X } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { api, errorMessage } from "../api";
@@ -7,6 +7,10 @@ import { useUiStore } from "../store/ui";
 import type { DiffHunk, DiffLine, FileDiff } from "../types";
 import { actions } from "../lib/actions";
 import { languageFor, tokenizeLines, type LineTokens } from "../lib/highlight";
+import { effectiveTabSize, resolveTabSetting, TAB_DEFAULT } from "../lib/tabs";
+import { useConfigStore } from "../store/config";
+import type { TabSetting } from "../types";
+import type { MenuItem } from "../store/ui";
 
 /** Character ranges [start, end) of a line that differ from its counterpart. */
 type Ranges = [number, number][];
@@ -375,12 +379,12 @@ function createInlineCache(): InlineFor {
  * Pixel width of the widest line. Only the rows on screen exist in the DOM,
  * so the horizontal scroll range is pinned to this instead of jumping around.
  */
-function widestLine(rows: SplitRow[], font: string): number {
+function widestLine(rows: SplitRow[], font: string, tabSize: number): number {
   const cols = (t: string) => {
     let n = 0;
     for (let i = 0; i < t.length; i++) {
       const c = t.charCodeAt(i);
-      n += c === 9 ? 8 : c > 0x2e7f ? 2 : 1;
+      n += c === 9 ? tabSize : c > 0x2e7f ? 2 : 1;
     }
     return n;
   };
@@ -404,7 +408,8 @@ function widestLine(rows: SplitRow[], font: string): number {
   if (!ctx) return cands.reduce((m, c) => Math.max(m, c.n), 0) * 7.2;
   ctx.font = font;
   let w = 0;
-  for (const c of cands) w = Math.max(w, ctx.measureText(c.t.replace(/\t/g, "        ")).width);
+  const tab = " ".repeat(tabSize);
+  for (const c of cands) w = Math.max(w, ctx.measureText(c.t.replace(/\t/g, tab)).width);
   return w;
 }
 
@@ -415,7 +420,7 @@ function widestLine(rows: SplitRow[], font: string): number {
  * virtualized (fixed heights), so the file size does not matter. A sticky bar
  * at the bottom carries the horizontal scrollbars so they stay in view.
  */
-function SplitPanes({ rows, isConflict, inlineFor, tokensFor }: { rows: SplitRow[]; isConflict: boolean; inlineFor: InlineFor; tokensFor: TokensFor }) {
+function SplitPanes({ rows, isConflict, inlineFor, tokensFor, tabSize }: { rows: SplitRow[]; isConflict: boolean; inlineFor: InlineFor; tokensFor: TokensFor; tabSize: number }) {
   const outer = useRef<HTMLDivElement>(null);
   const oldPane = useRef<HTMLDivElement>(null);
   const newPane = useRef<HTMLDivElement>(null);
@@ -439,8 +444,8 @@ function SplitPanes({ rows, isConflict, inlineFor, tokensFor }: { rows: SplitRow
   useLayoutEffect(() => {
     const el = outer.current;
     if (!el) return;
-    setContentWidth(Math.ceil(widestLine(rows, getComputedStyle(el).font)) + 24);
-  }, [rows]);
+    setContentWidth(Math.ceil(widestLine(rows, getComputedStyle(el).font, tabSize)) + 24);
+  }, [rows, tabSize]);
 
   // Mirror one horizontal position to the other side and to both scrollbars.
   // A side that merely ran out of room (shorter lines) never drags the rest back.
@@ -719,6 +724,75 @@ export function DiffView({ repo }: { repo: RepoState }) {
   const [reload, setReload] = useState(0);
   const theme = useUiStore((s) => s.resolvedTheme);
   const [tokens, setTokens] = useState<Map<DiffLine, LineTokens> | null>(null);
+
+  // ---- tab width: folder override > repository setting > .editorconfig > default ----
+  const repoPrefs = useConfigStore((s) => s.config?.repoPrefs?.[repo.path]);
+  const updateRepoPrefs = useConfigStore((s) => s.updateRepoPrefs);
+  const tabRes = useMemo(() => resolveTabSetting(repoPrefs, target.path), [repoPrefs, target.path]);
+  const [autoTab, setAutoTab] = useState<number | null>(null);
+  useEffect(() => {
+    if (tabRes.value !== "auto") return;
+    let cancelled = false;
+    setAutoTab(null);
+    api
+      .editorconfigTabSize(repo.path, target.path)
+      .then((v) => !cancelled && setAutoTab(v))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [repo.path, target.path, tabRes.value]);
+  const tabSize = effectiveTabSize(tabRes, autoTab);
+  const fileDir = target.path.includes("/") ? target.path.slice(0, target.path.lastIndexOf("/")) : "";
+  const tabTitle =
+    (tabRes.value === "auto"
+      ? autoTab
+        ? `Auto: ${autoTab} columns from .editorconfig`
+        : `Auto: no .editorconfig rule, ${TAB_DEFAULT} columns`
+      : `${tabRes.scope === "folder" ? `Folder ${tabRes.dir}` : "Repository"} setting: ${tabRes.value} columns`) + ". Click to change.";
+  const openTabMenu = (e: MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const choices: TabSetting[] = ["auto", 2, 4, 8];
+    const name = (v: TabSetting) => (v === "auto" ? "Auto (.editorconfig)" : `${v} columns`);
+    const mark = (on: boolean, text: string) => (on ? `\u2713 ${text}` : `\u2007\u2007 ${text}`);
+    const repoVal = repoPrefs?.tabSize ?? "auto";
+    const items: MenuItem[] = [
+      { label: "This repository", disabled: true, section: true },
+      ...choices.map((v) => ({ label: mark(repoVal === v, name(v)), onClick: () => void updateRepoPrefs(repo.path, (p) => ({ ...p, tabSize: v })) })),
+    ];
+    if (fileDir) {
+      const dirVal = repoPrefs?.tabOverrides?.[fileDir];
+      const setDir = (v: TabSetting | undefined) =>
+        void updateRepoPrefs(repo.path, (p) => {
+          const o = { ...(p.tabOverrides ?? {}) };
+          if (v === undefined) delete o[fileDir];
+          else o[fileDir] = v;
+          return { ...p, tabOverrides: o };
+        });
+      items.push(
+        { separator: true },
+        { label: `Folder ${fileDir}`, disabled: true, section: true },
+        { label: mark(dirVal === undefined, "Inherit"), onClick: () => setDir(undefined) },
+        ...choices.map((v) => ({ label: mark(dirVal === v, name(v)), onClick: () => setDir(v) }))
+      );
+    }
+    if (tabRes.scope === "folder" && tabRes.dir !== fileDir) {
+      items.push(
+        { separator: true },
+        { label: `Applied from folder ${tabRes.dir}`, disabled: true, section: true },
+        {
+          label: `Remove the override for ${tabRes.dir}`,
+          onClick: () =>
+            void updateRepoPrefs(repo.path, (p) => {
+              const o = { ...(p.tabOverrides ?? {}) };
+              delete o[tabRes.dir];
+              return { ...p, tabOverrides: o };
+            }),
+        }
+      );
+    }
+    useUiStore.getState().openContextMenu(r.left, r.bottom + 2, items);
+  };
   const lang = useMemo(() => languageFor(target.path), [target.path]);
 
   // Syntax colours: each side is tokenized as one document so multi-line
@@ -995,6 +1069,9 @@ export function DiffView({ repo }: { repo: RepoState }) {
             </button>
           </span>
         ) : null}
+        <button className="btn small ghost tab-size" title={tabTitle} onClick={openTabMenu}>
+          Tab: {tabSize}
+        </button>
         {isConflict ? null : (
           <>
         <span className="segmented tiny" title="Diff layout">
@@ -1054,7 +1131,7 @@ export function DiffView({ repo }: { repo: RepoState }) {
         </button>
       </div>
       <div ref={outerRef} className="diff-scroll">
-        <div ref={bodyRef} className={`diff-body ${wrap ? "wrap" : "nowrap"}${panes ? " panes" : ""}`}>
+        <div ref={bodyRef} className={`diff-body ${wrap ? "wrap" : "nowrap"}${panes ? " panes" : ""}`} style={{ tabSize }}>
           {diff?.note ? <div className="diff-note">{diff.note}</div> : null}
           {error ? <div className="diff-empty" style={{ color: "var(--danger)" }}>{error}</div> : null}
           {!diff && !error ? (
@@ -1072,7 +1149,7 @@ export function DiffView({ repo }: { repo: RepoState }) {
             ) : wrap ? (
               <SplitDiff rows={splitRows} isConflict={isConflict} marks={marks} inlineFor={inlineFor} tokensFor={tokensFor} />
             ) : (
-              <SplitPanes rows={splitRows} isConflict={isConflict} inlineFor={inlineFor} tokensFor={tokensFor} />
+              <SplitPanes rows={splitRows} isConflict={isConflict} inlineFor={inlineFor} tokensFor={tokensFor} tabSize={tabSize} />
             )
           ) : null}
         </div>

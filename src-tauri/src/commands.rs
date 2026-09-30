@@ -71,8 +71,30 @@ pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> AppResul
 
 #[tauri::command]
 pub fn remove_recent_repo(state: State<'_, AppState>, path: String) -> AppResult<()> {
-    state.update(|c| c.recent_repos.retain(|r| r != &path));
+    state.update(|c| {
+        c.recent_repos.retain(|r| r != &path);
+        c.repo_prefs.remove(&path);
+    });
     Ok(())
+}
+
+/// Replace the preferences stored for one repository (an empty object clears them).
+#[tauri::command]
+pub fn save_repo_prefs(state: State<'_, AppState>, repo_path: String, prefs: serde_json::Value) -> AppResult<()> {
+    let empty = prefs.is_null() || prefs.as_object().map(|o| o.is_empty()).unwrap_or(false);
+    state.update(move |c| {
+        if empty {
+            c.repo_prefs.remove(&repo_path);
+        } else {
+            c.repo_prefs.insert(repo_path, prefs);
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn editorconfig_tab_size(repo_path: String, path: String) -> Option<u32> {
+    git::repo::editorconfig_tab_size(std::path::Path::new(&repo_path), &path)
 }
 
 #[tauri::command]
@@ -475,11 +497,15 @@ pub async fn resolve_conflict(repo_path: String, path: String, side: String) -> 
     blocking(move || git::merge::resolve_conflict(&git::open(&repo_path)?, &path, &side)).await
 }
 
-/// Show a file in Explorer / Finder / the file manager. A path that no
+/// Show a path in Explorer / Finder / the file manager: a folder opens to
+/// show its contents, a file is selected inside its folder. A path that no
 /// longer exists (deleted file) opens its nearest existing folder instead.
 #[tauri::command]
 pub fn reveal_path(path: String) -> AppResult<()> {
     let p = std::path::Path::new(&path);
+    if p.is_dir() {
+        return tauri_plugin_opener::open_path(p, None::<&str>).map_err(|e| crate::error::AppError::Msg(format!("Cannot open the file manager: {e}")));
+    }
     if p.exists() {
         return tauri_plugin_opener::reveal_item_in_dir(p).map_err(|e| crate::error::AppError::Msg(format!("Cannot open the file manager: {e}")));
     }

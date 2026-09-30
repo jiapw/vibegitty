@@ -1,27 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  Account,
-  AppConfig,
-  AppInfo,
-  AuthorInfo,
-  CommitDetail,
-  DiffTarget,
-  FileDiff,
-  LfsInfo,
-  LfsReport,
-  LogPage,
-  MergeResult,
-  Provider,
-  PullResult,
-  PushResult,
-  RefInfo,
-  RemoteInfo,
-  RemoteRepo,
-  RepoInfo,
-  Settings,
-  StashInfo,
-  WorkingStatus,
-} from "./types";
+import type { Account, AppConfig, AppInfo, AuthorInfo, CommitDetail, DiffTarget, FileDiff, LfsInfo, LfsReport, LogPage, MergeResult, Provider, PullResult, PushResult, RefInfo, RemoteInfo, RemoteRepo, RepoInfo, Settings, StashInfo, WorkingStatus, RepoPrefs } from "./types";
 
 export const api = {
   // config
@@ -31,6 +9,8 @@ export const api = {
   saveUiPrefs: (prefs: Record<string, unknown>) => invoke<void>("save_ui_prefs", { prefs }),
   removeRecentRepo: (path: string) => invoke<void>("remove_recent_repo", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
+  saveRepoPrefs: (repoPath: string, prefs: RepoPrefs | null) => invoke<void>("save_repo_prefs", { repoPath, prefs }),
+  editorconfigTabSize: (repoPath: string, path: string) => invoke<number | null>("editorconfig_tab_size", { repoPath, path }),
   setActiveRepo: (path: string | null) => invoke<void>("set_active_repo", { path }),
   closeRepo: (path: string) => invoke<void>("close_repo", { path }),
 

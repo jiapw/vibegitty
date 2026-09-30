@@ -1,5 +1,6 @@
-import { Archive, ArchiveRestore, ArrowUp, Check, Cloud, Copy, Database, Eye, EyeOff, FolderOpen, GitBranchPlus, GitMerge, History, Pencil, Plus, RefreshCw, RotateCcw, Scissors, Tag, Trash2, Undo2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowUp, Check, Cloud, Copy, Database, Eye, EyeOff, FolderOpen, GitBranchPlus, GitMerge, History, Pencil, Plus, RefreshCw, RotateCcw, Scissors, Tag, Trash2, Undo2, IndentIncrease } from "lucide-react";
 import type { RepoState } from "../store/repos";
+import { openModal } from "../store/ui";
 import type { MenuItem } from "../store/ui";
 import type { CommitInfo, RefInfo, StashInfo, StatusEntry } from "../types";
 import { actions, copyText } from "./actions";
@@ -203,8 +204,22 @@ export function folderMenu(
       { label: `Mark folder as resolved${sfx}`, icon: <Plus />, onClick: () => void actions.markResolved(p, paths) }
     );
   }
-  items.push(sep, { label: "Copy folder path", icon: <Copy />, onClick: () => void copyText(dir) });
+  items.push(
+    sep,
+    { label: revealLabel(), icon: <FolderOpen />, onClick: () => actions.reveal(p, dir) },
+    { label: "Copy folder path", icon: <Copy />, onClick: () => void copyText(dir) },
+    { label: "Tab width\u2026", icon: <IndentIncrease />, onClick: () => openModal({ kind: "tabWidth", dir }) }
+  );
   return items;
+}
+
+/** Context menu for a folder row in a commit's file tree. */
+export function commitFolderMenu(repo: RepoState, dir: string): MenuItem[] {
+  return [
+    { label: revealLabel(), icon: <FolderOpen />, onClick: () => actions.reveal(repo.path, dir) },
+    { label: "Copy folder path", icon: <Copy />, onClick: () => void copyText(dir) },
+    { label: "Tab width\u2026", icon: <IndentIncrease />, onClick: () => openModal({ kind: "tabWidth", dir }) },
+  ];
 }
 
 /** "Show in Explorer" / "Reveal in Finder" / "Show in file manager", by platform. */
@@ -240,6 +255,7 @@ export function fileMenu(
   const items: MenuItem[] = [
     { label: "View changes", icon: <Eye />, onClick: showDiff },
     { label: revealLabel(), icon: <FolderOpen />, onClick: () => actions.reveal(p, entry.path) },
+    { label: "Copy path", icon: <Copy />, onClick: () => void copyText(entry.path) },
     sep,
   ];
   if (area === "unstaged") {

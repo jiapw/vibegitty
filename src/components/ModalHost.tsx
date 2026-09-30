@@ -2,6 +2,7 @@ import { useUiStore } from "../store/ui";
 import { CloneModal } from "./modals/CloneModal";
 import { AccountsModal } from "./modals/AccountsModal";
 import { SettingsModal } from "./modals/SettingsModal";
+import { TabWidthModal } from "./modals/TabWidthModal";
 import {
   ConfirmModal,
   InputModal,
@@ -23,6 +24,8 @@ export function ModalHost() {
       return <AccountsModal reauth={modal.reauth} />;
     case "settings":
       return <SettingsModal />;
+    case "tabWidth":
+      return <TabWidthModal dir={modal.dir} />;
     case "confirm":
       return <ConfirmModal spec={modal} />;
     case "input":

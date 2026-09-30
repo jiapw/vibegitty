@@ -119,3 +119,20 @@ pub fn set_author(repo: Option<&Repository>, name: &str, email: &str, global: bo
     cfg.set_str("user.email", email)?;
     Ok(())
 }
+
+/// Tab width for a file according to the `.editorconfig` files that apply to
+/// it (`tab_width`, else `indent_size`), or None when nothing sets one.
+pub fn editorconfig_tab_size(repo_root: &std::path::Path, rel: &str) -> Option<u32> {
+    use ec4rs::property::{IndentSize, TabWidth};
+    let abs = repo_root.join(rel);
+    let mut props = ec4rs::properties_of(&abs).ok()?;
+    props.use_fallbacks();
+    let ok = |n: usize| u32::try_from(n).ok().filter(|n| (1..=16).contains(n));
+    if let Ok(TabWidth::Value(n)) = props.get::<TabWidth>() {
+        return ok(n);
+    }
+    if let Ok(IndentSize::Value(n)) = props.get::<IndentSize>() {
+        return ok(n);
+    }
+    None
+}

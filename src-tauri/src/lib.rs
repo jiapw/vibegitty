@@ -46,6 +46,8 @@ pub fn run() {
             commands::save_settings,
             commands::save_ui_prefs,
             commands::remove_recent_repo,
+            commands::save_repo_prefs,
+            commands::editorconfig_tab_size,
             commands::set_active_repo,
             commands::close_repo,
             commands::open_repo,

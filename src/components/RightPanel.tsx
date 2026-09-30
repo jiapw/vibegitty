@@ -23,7 +23,7 @@ import { useUiStore, toast } from "../store/ui";
 import { useConfigStore } from "../store/config";
 import type { CommitDetail, CommitFile, StatusEntry } from "../types";
 import { actions, copyText } from "../lib/actions";
-import { commitFileMenu, fileMenu, folderMenu } from "../lib/menus";
+import { commitFileMenu, commitFolderMenu, fileMenu, folderMenu } from "../lib/menus";
 import { basename, dirname, formatBytes, formatDateTime, statusLetter } from "../lib/format";
 import { buildFileTree, flattenFileTree, type FolderNode, type TreeNode } from "../lib/fileTree";
 import { Avatar } from "./Avatar";
@@ -686,6 +686,10 @@ function CommitPanel({ repo, oid }: { repo: RepoState; oid: string }) {
                   style={{ paddingLeft: 10 + n.depth * INDENT }}
                   title={n.key}
                   onClick={() => setCollapsed((c) => ({ ...c, [n.key]: !c[n.key] }))}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    useUiStore.getState().openContextMenu(e.clientX, e.clientY, commitFolderMenu(repo, n.key));
+                  }}
                 >
                   {isCollapsed ? <ChevronRight className="chev" /> : <ChevronDown className="chev" />}
                   <Folder className="ficon" />

@@ -1156,6 +1156,11 @@ a {
 .diff-ruler i.mod {
   background: #4f8cff;
 }
+.diff-header .tab-size {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 .diff-nav {
   display: inline-flex;
   align-items: center;

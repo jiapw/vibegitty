@@ -75,9 +75,12 @@ function move(from: StatusEntry[], to: StatusEntry[], paths: string[], toStatus?
   }
 }
 
+// Per-repository preferences, kept in memory so the tab-width UI can be exercised.
+const repoPrefs: Record<string, unknown> = {};
+
 const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   get_app_info: () => ({ version: "dev", portable: false, builtinGithubClientId: true, githubBrowserLogin: true }),
-  get_config: () => ({ openRepos: [REPO], activeRepo: REPO, recentRepos: [REPO, "F:\\demo\\other-project", "D:\\work\\api-server"], accounts: [
+  get_config: () => ({ openRepos: [REPO], activeRepo: REPO, repoPrefs, recentRepos: [REPO, "F:\\demo\\other-project", "D:\\work\\api-server"], accounts: [
     { id: "acc-1", provider: "github", host: "github.com", apiBase: "https://api.github.com", webBase: "https://github.com", username: "jiapw", displayName: "Jiaping Wang", avatarUrl: null, tokenUsername: "jiapw", authKind: "oauth" },
   ], settings: {
     authorName: "", authorEmail: "", githubClientId: "", githubClientSecret: "", oauthRedirectPort: 47831, defaultCloneDir: "", commitPageSize: 400, largeFileWarnMb: 50, theme: "dark",
@@ -147,6 +150,8 @@ const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
   add_gitignore_patterns: (a) => (a.patterns as string[]).length,
   remove_recent_repo: () => null,
   reveal_path: () => null,
+  save_repo_prefs: (a) => { if (a.prefs) repoPrefs[String(a.repoPath)] = a.prefs; else delete repoPrefs[String(a.repoPath)]; return null; },
+  editorconfig_tab_size: (a) => (/[.]py$/.test(String(a.path)) ? 2 : null),
   rebase_branch: () => ({ kind: "rebased", oid: "0101010101010101010101010101010101010101", conflicts: [] }),
   rebase_continue: () => ({ kind: "rebased", oid: "0101010101010101010101010101010101010101", conflicts: [] }),
   rebase_skip: () => ({ kind: "rebased", oid: "0101010101010101010101010101010101010101", conflicts: [] }),
