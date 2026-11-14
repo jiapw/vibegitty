@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage } from "../api";
 import { useReposStore, type RunOpts } from "../store/repos";
+import { useCommitDrafts } from "../store/commitDrafts";
 import { confirmDialog, openModal, promptDialog, toast } from "../store/ui";
 import type { MergeResult } from "../types";
 
@@ -331,7 +332,13 @@ export const actions = {
     });
   },
   commit(path: string, message: string, amend: boolean) {
-    return run(path, amend ? "Amending" : "Committing", () => api.commit(path, message, amend), {
+    return run(path, amend ? "Amending" : "Committing", async () => {
+      const draft = useCommitDrafts.getState().drafts[path];
+      const oid = await api.commit(path, message, amend);
+      const current = useCommitDrafts.getState();
+      if (current.drafts[path] === draft) current.clear(path);
+      return oid;
+    }, {
       success: (oid) => `${amend ? "Amended" : "Committed"} ${oid.slice(0, 7)}`,
     });
   },

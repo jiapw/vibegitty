@@ -21,14 +21,13 @@ import { api, errorMessage } from "../api";
 import { useActiveRepo, useReposStore, type RepoState } from "../store/repos";
 import { useUiStore, toast } from "../store/ui";
 import { useConfigStore } from "../store/config";
+import { emptyDraft, useCommitDrafts } from "../store/commitDrafts";
 import type { CommitDetail, CommitFile, StatusEntry } from "../types";
 import { actions, copyText } from "../lib/actions";
 import { commitFileMenu, commitFolderMenu, fileMenu, folderMenu } from "../lib/menus";
 import { basename, dirname, formatBytes, formatDateTime, statusLetter } from "../lib/format";
 import { buildFileTree, flattenFileTree, type FolderNode, type TreeNode } from "../lib/fileTree";
 import { Avatar } from "./Avatar";
-
-const drafts = new Map<string, { summary: string; body: string; amend: boolean }>();
 
 type Area = "unstaged" | "staged" | "conflicted";
 
@@ -202,30 +201,15 @@ function WipPanel({ repo }: { repo: RepoState }) {
   const wipSplit = useUiStore((s) => s.wipSplit);
   const setWipSplit = useUiStore((s) => s.setWipSplit);
   const panesRef = useRef<HTMLDivElement>(null);
-  const draft = drafts.get(repo.path) ?? { summary: "", body: "", amend: false };
-  const [summary, setSummary] = useState(draft.summary);
-  const [body, setBody] = useState(draft.body);
-  const [amend, setAmend] = useState(draft.amend);
+  const { summary, body, amend } = useCommitDrafts((s) => s.drafts[repo.path] ?? emptyDraft);
+  const updateDraft = useCommitDrafts((s) => s.update);
   const [sel, setSel] = useState<FileSelection>({ area: "unstaged", paths: [], anchor: null });
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    drafts.set(repo.path, { summary, body, amend });
-  }, [repo.path, summary, body, amend]);
-  useEffect(() => {
-    // switching repo: load its draft, reset selection and folder state
-    const d = drafts.get(repo.path) ?? { summary: "", body: "", amend: false };
-    setSummary(d.summary);
-    setBody(d.body);
-    setAmend(d.amend);
-    setSel({ area: "unstaged", paths: [], anchor: null });
-    setCollapsed({});
-  }, [repo.path]);
-  useEffect(() => {
     if (st.mergeMessage && !summary && st.state !== "clean") {
       const [first, ...rest] = st.mergeMessage.split("\n");
-      setSummary(first);
-      setBody(rest.join("\n").trim());
+      updateDraft(repo.path, { summary: first, body: rest.join("\n").trim() });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [st.mergeMessage, st.state]);
@@ -368,22 +352,11 @@ function WipPanel({ repo }: { repo: RepoState }) {
       await actions.rebaseContinue(repo.path);
       return;
     }
-    const r = await actions.commit(repo.path, message, amend);
-    if (r !== undefined) {
-      setSummary("");
-      setBody("");
-      setAmend(false);
-    }
+    await actions.commit(repo.path, message, amend);
   };
-  const onAmendToggle = async (v: boolean) => {
-    setAmend(v);
-    if (v && !summary && head?.oid) {
-      const c = repo.commits.find((c) => c.oid === head.oid);
-      if (c) {
-        setSummary(c.summary);
-        setBody(c.body);
-      }
-    }
+  const onAmendToggle = (amend: boolean) => {
+    const c = amend && !summary && head?.oid ? repo.commits.find((c) => c.oid === head.oid) : undefined;
+    updateDraft(repo.path, c ? { amend, summary: c.summary, body: c.body } : { amend });
   };
   const opLabel = st.state === "merge" ? "merge" : st.state === "cherrypick" ? "cherry-pick" : st.state === "revert" ? "revert" : st.state;
   const unstagedMulti = multi("unstaged");
@@ -517,7 +490,7 @@ function WipPanel({ repo }: { repo: RepoState }) {
             placeholder="Summary"
             value={summary}
             maxLength={200}
-            onChange={(e) => setSummary(e.target.value)}
+            onChange={(e) => updateDraft(repo.path, { summary: e.target.value })}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void doCommit();
             }}
@@ -526,7 +499,7 @@ function WipPanel({ repo }: { repo: RepoState }) {
             className="input desc"
             placeholder="Description (optional)"
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onChange={(e) => updateDraft(repo.path, { body: e.target.value })}
             onKeyDown={(e) => {
               if ((e.ctrlKey || e.metaKey) && e.key === "Enter") void doCommit();
             }}
@@ -743,7 +716,7 @@ export function RightPanel() {
   const st = repo.status;
   const hasChanges = !!st && st.staged.length + st.unstaged.length + st.conflicted.length > 0;
   const sel = repo.selected;
-  if (st && (sel?.kind === "wip" || (!sel && hasChanges))) return <WipPanel repo={repo} />;
+  if (st && (sel?.kind === "wip" || (!sel && hasChanges))) return <WipPanel key={repo.path} repo={repo} />;
   if (sel?.kind === "commit") return <CommitPanel repo={repo} oid={sel.oid} />;
   if (st && repo.info?.head.unborn) {
     return (
